@@ -1,1 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+*.spec.dist/
+*.app/
+*.dmg
+*.exe
+*.msi
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Secrets / local config
+.env
+.env.local
+
+# OS cruft
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Editor / IDE
+.vscode/
+.idea/
+*.iml
+
+# Agent-coding worktrees + project state
 .agent-coding/
+.agent-coding-pr-body.md
+
+# Test corpus output (generated)
+/tmp/plex_corpus/
