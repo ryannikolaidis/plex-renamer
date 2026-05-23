@@ -11,11 +11,23 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
 
 from plex_renamer.parser import parse_file
+
+# The read-only reference dir guard uses a hard-coded `/Volumes/Cage/Media/CleverGet`
+# prefix, which is the user's actual macOS reference media directory. On Windows
+# the path semantics break the parts-based comparison (`/Volumes/...` resolves to
+# a drive-prefixed path), so the guard's behavior is not testable on Windows.
+# The production prefix only protects the user's macOS dev machine; CI on
+# Linux + macOS still exercises the mechanism.
+_skip_on_windows = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="readonly-guard prefix is macOS-specific; Windows path semantics break the comparison",
+)
 
 
 def _parse(name: str, *, root: Path) -> object:
@@ -304,31 +316,37 @@ def test_bracketed_unrated_recognized_as_edition(tmp_path: Path) -> None:
 _BAD = "/Volumes/Cage/Media/CleverGet/test-write"
 
 
+@_skip_on_windows
 def test_guard_blocks_os_mkdir() -> None:
     with pytest.raises(RuntimeError, match="read-only"):
         os.mkdir(_BAD)
 
 
+@_skip_on_windows
 def test_guard_blocks_os_makedirs() -> None:
     with pytest.raises(RuntimeError, match="read-only"):
         os.makedirs(_BAD)
 
 
+@_skip_on_windows
 def test_guard_blocks_os_replace() -> None:
     with pytest.raises(RuntimeError, match="read-only"):
         os.replace(_BAD, _BAD + "-2")
 
 
+@_skip_on_windows
 def test_guard_blocks_os_symlink() -> None:
     with pytest.raises(RuntimeError, match="read-only"):
         os.symlink(_BAD, _BAD + "-link")
 
 
+@_skip_on_windows
 def test_guard_blocks_os_link() -> None:
     with pytest.raises(RuntimeError, match="read-only"):
         os.link(_BAD, _BAD + "-link")
 
 
+@_skip_on_windows
 def test_guard_blocks_path_rename(tmp_path: Path) -> None:
     src = Path(_BAD)
     dst = tmp_path / "dst.mp4"
@@ -336,6 +354,7 @@ def test_guard_blocks_path_rename(tmp_path: Path) -> None:
         src.rename(dst)
 
 
+@_skip_on_windows
 def test_guard_blocks_path_replace(tmp_path: Path) -> None:
     src = Path(_BAD)
     dst = tmp_path / "dst.mp4"
@@ -343,6 +362,7 @@ def test_guard_blocks_path_replace(tmp_path: Path) -> None:
         src.replace(dst)
 
 
+@_skip_on_windows
 def test_guard_blocks_path_symlink_to(tmp_path: Path) -> None:
     link = tmp_path / "link"
     target = Path(_BAD)
@@ -350,6 +370,7 @@ def test_guard_blocks_path_symlink_to(tmp_path: Path) -> None:
         link.symlink_to(target)
 
 
+@_skip_on_windows
 def test_guard_blocks_path_hardlink_to(tmp_path: Path) -> None:
     link = tmp_path / "link"
     target = Path(_BAD)
@@ -357,11 +378,13 @@ def test_guard_blocks_path_hardlink_to(tmp_path: Path) -> None:
         link.hardlink_to(target)
 
 
+@_skip_on_windows
 def test_guard_blocks_shutil_chown() -> None:
     with pytest.raises(RuntimeError, match="read-only"):
         shutil.chown(_BAD, user="root")
 
 
+@_skip_on_windows
 def test_guard_blocks_text_mode_open_write() -> None:
     # The explicit ``"wt"`` mode (text-mode write) is intentional here; the
     # whole point of the test is to verify the guard catches text-mode
@@ -370,11 +393,13 @@ def test_guard_blocks_text_mode_open_write() -> None:
         open(_BAD + "/foo.txt", "wt")  # noqa: SIM115, UP015
 
 
+@_skip_on_windows
 def test_guard_blocks_text_mode_open_append() -> None:
     with pytest.raises(RuntimeError, match="read-only"):
         open(_BAD + "/foo.txt", "at")  # noqa: SIM115, UP015
 
 
+@_skip_on_windows
 def test_guard_blocks_text_mode_open_exclusive() -> None:
     with pytest.raises(RuntimeError, match="read-only"):
         open(_BAD + "/foo.txt", "xt")  # noqa: SIM115, UP015
@@ -383,6 +408,7 @@ def test_guard_blocks_text_mode_open_exclusive() -> None:
 # --- Fix 7 prefix-match: /Volumes/Cage/Media/CleverGetExtra not matched -----
 
 
+@_skip_on_windows
 def test_guard_does_not_falsely_match_sibling_prefix(tmp_path: Path) -> None:
     """The string-prefix check would match ``CleverGetExtra``; the parts-check
     must not. We use a tmp_path-based write to confirm the guard lets it

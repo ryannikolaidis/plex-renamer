@@ -7,6 +7,7 @@ generator over an existing tree must be idempotent.
 
 from __future__ import annotations
 
+import sys
 import unicodedata
 from pathlib import Path
 
@@ -16,6 +17,11 @@ from plex_renamer.parser import parse_tree
 from plex_renamer.test_corpus import CORPUS_PATTERNS, build_corpus
 from plex_renamer.test_corpus.generator import READONLY_PREFIX, _refuse_readonly
 from plex_renamer.test_corpus.patterns import entries_for_category
+
+_skip_on_windows = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="readonly-guard prefix is macOS-specific; Windows path semantics break the comparison",
+)
 
 
 def test_build_corpus_creates_every_entry(tmp_path: Path) -> None:
@@ -135,11 +141,13 @@ def test_nfd_entry_written_as_nfd(tmp_path: Path) -> None:
     assert on_disk != "Pokémon The Movie.mp4"
 
 
+@_skip_on_windows
 def test_generator_refuses_readonly_prefix() -> None:
     with pytest.raises(RuntimeError, match="read-only"):
         build_corpus(Path(READONLY_PREFIX) / "child")
 
 
+@_skip_on_windows
 def test_generator_refuse_readonly_allows_sibling_prefix() -> None:
     """Generator's own guard must NOT false-match a sibling directory.
 

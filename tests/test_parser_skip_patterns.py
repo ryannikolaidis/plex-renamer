@@ -6,11 +6,17 @@ Files matching skip patterns are still parsed (so callers see them), but
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
 from plex_renamer.parser import parse_file
+
+_skip_on_windows = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="readonly-guard prefix is macOS-specific; Windows path semantics break the comparison",
+)
 
 
 def _make(path: Path) -> None:
@@ -88,6 +94,7 @@ def test_no_extension_skipped(tmp_path: Path) -> None:
 # --- Read-only fixture self-test --------------------------------------------
 
 
+@_skip_on_windows
 def test_readonly_fixture_blocks_writes_under_prefix(tmp_path: Path) -> None:
     """The conftest autouse fixture must raise on writes under the CleverGet prefix.
 
@@ -100,6 +107,7 @@ def test_readonly_fixture_blocks_writes_under_prefix(tmp_path: Path) -> None:
         bad.touch()
 
 
+@_skip_on_windows
 def test_readonly_fixture_blocks_open_under_prefix() -> None:
     """``builtins.open`` is also patched for writable modes under the prefix.
 
