@@ -92,12 +92,13 @@ def test_cli_version_flag_exits_zero(capsys) -> None:
     assert __version__ in captured.out
 
 
-def test_cli_unknown_arg_exits_nonzero(capsys) -> None:
+def test_cli_unknown_arg_exits_two(capsys) -> None:
     from plex_renamer.cli.main import app
 
     code = app(["--nope"])
     captured = capsys.readouterr()
-    assert code != 0, "unknown argument must not report success"
+    # POSIX convention (also Typer/Click default) for unknown CLI arguments.
+    assert code == 2, f"expected exit code 2 for unknown argument, got {code}"
     assert "unknown argument" in captured.err
 
 
