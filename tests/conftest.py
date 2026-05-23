@@ -11,6 +11,16 @@ mutation.
 The fixture runs for EVERY test. It is intentionally fail-loud: if a test
 needs to write to a path that happens to share the prefix, it should mock
 the path itself or use a tmp directory.
+
+KNOWN LIMITATION: the conftest patches the standard-library entry points
+at the module level (``os.rename``, ``shutil.copy``, ``pathlib.Path.mkdir``,
+etc.). A future module that imports a writable name into its own namespace
+via ``from os import rename`` would bind the original function at import
+time and bypass our monkeypatch. The executor slice (which performs the
+real filesystem mutations) MUST NOT rebind these names; instead, the
+executor should call through a project-owned ``plex_renamer.executor.guards``
+shim that wraps every writable call site with the same prefix check. The
+conftest then becomes a defence-in-depth layer rather than the sole guard.
 """
 
 from __future__ import annotations
@@ -18,25 +28,53 @@ from __future__ import annotations
 import builtins
 import os
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import pytest
 
 READONLY_PREFIX = "/Volumes/Cage/Media/CleverGet"
+_READONLY_PREFIX_PARTS: tuple[str, ...] = PurePath(READONLY_PREFIX).parts
 
-# open() modes that imply writing to the filesystem.
+# open() modes that imply writing to the filesystem. We treat every mode
+# whose semantics include a write (binary OR text variant) as guarded.
 _WRITABLE_MODES: frozenset[str] = frozenset(
-    {"w", "a", "x", "r+", "w+", "a+", "wb", "ab", "xb", "rb+", "wb+", "ab+"}
+    {
+        # Pure binary.
+        "wb",
+        "ab",
+        "xb",
+        "rb+",
+        "wb+",
+        "ab+",
+        # Pure text (default).
+        "w",
+        "a",
+        "x",
+        "r+",
+        "w+",
+        "a+",
+        # Explicit text-mode variants (with 't').
+        "wt",
+        "at",
+        "xt",
+        "rt+",
+        "wt+",
+        "at+",
+        "xt+",
+    }
 )
 
 
 def _is_under_readonly_prefix(path: object) -> bool:
     """Return True if ``path`` resolves to something under the read-only prefix.
 
-    Accepts str, bytes, os.PathLike, or Path. Does NOT call ``Path.resolve``
-    because resolve() walks the filesystem and can itself fail; we use a
-    string-prefix check on the user-supplied value normalized via
-    ``os.fspath``.
+    Accepts str, bytes, os.PathLike, or Path. Uses a :class:`PurePath`-based
+    "is within" check (the candidate's parts must START with the prefix's
+    parts) so a sibling path like ``/Volumes/Cage/Media/CleverGetExtra``
+    does NOT false-match a string ``startswith`` check.
+
+    Does NOT call ``Path.resolve``: resolve() walks the filesystem and can
+    itself fail; we use the user-supplied value via ``os.fspath``.
     """
     if path is None:
         return False
@@ -51,9 +89,16 @@ def _is_under_readonly_prefix(path: object) -> bool:
             return False
     if not isinstance(s, str):
         return False
-    # Absolute vs relative: we only guard absolute paths under the prefix.
-    # A relative path "foo/bar" never matches /Volumes/Cage/Media/CleverGet.
-    return s.startswith(READONLY_PREFIX)
+    # We only guard absolute paths under the prefix; a relative path never
+    # matches /Volumes/Cage/Media/CleverGet.
+    candidate = PurePath(s)
+    if not candidate.is_absolute():
+        return False
+    candidate_parts = candidate.parts
+    prefix_len = len(_READONLY_PREFIX_PARTS)
+    if len(candidate_parts) < prefix_len:
+        return False
+    return candidate_parts[:prefix_len] == _READONLY_PREFIX_PARTS
 
 
 def _raise_readonly(op: str, path: object, *_, **__) -> None:
@@ -72,10 +117,15 @@ def _enforce_readonly_reference_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     removing any of the locked ones is a regression.
     """
     # ----- os ---------------------------------------------------------------
-    _wrap_os_unary(monkeypatch, "rename", legacy_two_arg=True)
+    _wrap_os_two_arg(monkeypatch, "rename")
+    _wrap_os_two_arg(monkeypatch, "replace")
+    _wrap_os_two_arg(monkeypatch, "symlink")
+    _wrap_os_two_arg(monkeypatch, "link")
     _wrap_os_unary(monkeypatch, "remove")
     _wrap_os_unary(monkeypatch, "removedirs")
     _wrap_os_unary(monkeypatch, "rmdir")
+    _wrap_os_unary(monkeypatch, "mkdir")
+    _wrap_os_unary(monkeypatch, "makedirs")
 
     # ----- shutil ----------------------------------------------------------
     _wrap_shutil_two_arg(monkeypatch, "copy")
@@ -84,6 +134,7 @@ def _enforce_readonly_reference_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     _wrap_shutil_two_arg(monkeypatch, "copytree")
     _wrap_shutil_two_arg(monkeypatch, "move")
     _wrap_shutil_unary(monkeypatch, "rmtree")
+    _wrap_shutil_chown(monkeypatch)
 
     # ----- pathlib.Path ----------------------------------------------------
     _wrap_path_method(monkeypatch, "write_text")
@@ -92,6 +143,10 @@ def _enforce_readonly_reference_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     _wrap_path_method(monkeypatch, "mkdir")
     _wrap_path_method(monkeypatch, "rmdir")
     _wrap_path_method(monkeypatch, "touch")
+    _wrap_path_two_arg_method(monkeypatch, "rename")
+    _wrap_path_two_arg_method(monkeypatch, "replace")
+    _wrap_path_two_arg_method(monkeypatch, "symlink_to")
+    _wrap_path_two_arg_method(monkeypatch, "hardlink_to")
 
     # ----- builtin open() --------------------------------------------------
     _wrap_open(monkeypatch)
@@ -100,25 +155,26 @@ def _enforce_readonly_reference_dir(monkeypatch: pytest.MonkeyPatch) -> None:
 # --- Wrappers ---------------------------------------------------------------
 
 
-def _wrap_os_unary(
-    monkeypatch: pytest.MonkeyPatch, fn_name: str, *, legacy_two_arg: bool = False
-) -> None:
-    """Wrap ``os.<fn_name>``. ``legacy_two_arg=True`` covers ``os.rename(src, dst)``."""
+def _wrap_os_unary(monkeypatch: pytest.MonkeyPatch, fn_name: str) -> None:
+    """Wrap a unary ``os`` function so it raises on read-only paths."""
     original = getattr(os, fn_name)
 
-    if legacy_two_arg:
+    def guarded(path, *args, **kwargs):
+        if _is_under_readonly_prefix(path):
+            _raise_readonly(f"os.{fn_name}", path)
+        return original(path, *args, **kwargs)
 
-        def guarded(src, dst, *args, **kwargs):
-            if _is_under_readonly_prefix(src) or _is_under_readonly_prefix(dst):
-                _raise_readonly(f"os.{fn_name}", (src, dst))
-            return original(src, dst, *args, **kwargs)
+    monkeypatch.setattr(os, fn_name, guarded)
 
-    else:
 
-        def guarded(path, *args, **kwargs):  # type: ignore[misc]
-            if _is_under_readonly_prefix(path):
-                _raise_readonly(f"os.{fn_name}", path)
-            return original(path, *args, **kwargs)
+def _wrap_os_two_arg(monkeypatch: pytest.MonkeyPatch, fn_name: str) -> None:
+    """Wrap a two-arg ``os`` function (rename, replace, symlink, link)."""
+    original = getattr(os, fn_name)
+
+    def guarded(src, dst, *args, **kwargs):
+        if _is_under_readonly_prefix(src) or _is_under_readonly_prefix(dst):
+            _raise_readonly(f"os.{fn_name}", (src, dst))
+        return original(src, dst, *args, **kwargs)
 
     monkeypatch.setattr(os, fn_name, guarded)
 
@@ -145,6 +201,18 @@ def _wrap_shutil_unary(monkeypatch: pytest.MonkeyPatch, fn_name: str) -> None:
     monkeypatch.setattr(shutil, fn_name, guarded)
 
 
+def _wrap_shutil_chown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``shutil.chown(path, user=None, group=None)`` — guard the path arg."""
+    original = shutil.chown
+
+    def guarded(path, *args, **kwargs):
+        if _is_under_readonly_prefix(path):
+            _raise_readonly("shutil.chown", path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "chown", guarded)
+
+
 def _wrap_path_method(monkeypatch: pytest.MonkeyPatch, method_name: str) -> None:
     """Wrap ``pathlib.Path.<method_name>`` so it raises on read-only paths."""
     original = getattr(Path, method_name)
@@ -153,6 +221,22 @@ def _wrap_path_method(monkeypatch: pytest.MonkeyPatch, method_name: str) -> None
         if _is_under_readonly_prefix(self):
             _raise_readonly(f"Path.{method_name}", self)
         return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, method_name, guarded)
+
+
+def _wrap_path_two_arg_method(monkeypatch: pytest.MonkeyPatch, method_name: str) -> None:
+    """Wrap a two-arg ``pathlib.Path`` method (rename/replace/symlink_to/hardlink_to).
+
+    These methods take ``self`` and a target; either side under the read-only
+    prefix is a violation.
+    """
+    original = getattr(Path, method_name)
+
+    def guarded(self, target, *args, **kwargs):
+        if _is_under_readonly_prefix(self) or _is_under_readonly_prefix(target):
+            _raise_readonly(f"Path.{method_name}", (self, target))
+        return original(self, target, *args, **kwargs)
 
     monkeypatch.setattr(Path, method_name, guarded)
 

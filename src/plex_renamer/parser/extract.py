@@ -92,11 +92,39 @@ def parse_file(path: Path, input_root: Path | None = None) -> ParseResult:
     kind: Literal["movie", "tv", "unknown"] = _classify_kind(tokens)
     title_candidate, episode_title = _split_title(tokens, kind)
 
+    # Year-as-title recovery: when the filename is literally just a year
+    # (``1984.mp4``) or begins with one that IS part of the title
+    # (``2001 A Space Odyssey.mp4``), restore the year into the title
+    # candidate and clear the year. The planner can re-derive a year later
+    # from TMDB lookups; pinning a fake year here would corrupt the lookup.
+    # Alternative considered: keep ``year`` set and also expose the title
+    # with the year embedded. Rejected because the planner reads ``year``
+    # as authoritative; leaking the year into a title that is NOT actually
+    # about the year would mislead the lookup.
+    if (
+        kind == "movie"
+        and tokens.year is not None
+        and tokens.year_at_stem_start
+        and (title_candidate is None or _starts_with_year(title_candidate) is False)
+    ):
+        # Case A: residue is empty (year was the entire stem).
+        # Case B: residue does not already contain the year (year was at the
+        #         start of the stem and was peeled, but the title carries it
+        #         semantically — e.g. ``2001 A Space Odyssey``).
+        restored_year = str(tokens.year)
+        if title_candidate is None or not title_candidate.strip():
+            title_candidate = restored_year
+        else:
+            title_candidate = f"{restored_year} {title_candidate}".strip()
+        year_to_emit: int | None = None
+    else:
+        year_to_emit = tokens.year
+
     return ParseResult(
         source_path=path,
         kind=kind,
         title_candidate=title_candidate,
-        year=tokens.year,
+        year=year_to_emit,
         season=tokens.season,
         episode=tokens.episode,
         episode_end=tokens.episode_end,
@@ -215,6 +243,13 @@ def _split_title(
     return (cleaned or None, None)
 
 
+def _starts_with_year(text: str) -> bool:
+    """Whether ``text`` begins with a 4-digit year-shaped run."""
+    import re
+
+    return bool(re.match(r"\s*(?:19|20)\d{2}(?![\d])", text))
+
+
 def _clean_residue(text: str) -> str:
     """Trim, collapse dashes, and strip trailing/leading punctuation."""
     cleaned = text.replace("⟦SE⟧", " ")
@@ -293,10 +328,18 @@ def _parent_dirs(path: Path, input_root: Path | None) -> list[str]:
     When ``input_root`` is provided and ``path`` is under it, the returned
     list is the path RELATIVE to ``input_root`` (excluding the file itself).
     Otherwise it's every parent up to the filesystem root.
+
+    Both ``path`` and ``input_root`` are resolved before computing the
+    relative chain. On macOS the realpath transform ``/var/folders/...`` ->
+    ``/private/var/folders/...`` means an unresolved ``input_root`` would
+    silently fail the ``relative_to`` check and fall back to the absolute
+    parent chain. Resolving both sides keeps the relative form.
     """
     if input_root is not None:
         try:
-            rel = path.relative_to(input_root)
+            resolved_root = input_root.resolve()
+            resolved_path = path.resolve() if path.is_absolute() else path
+            rel = resolved_path.relative_to(resolved_root)
             return [normalize_unicode(p) for p in rel.parent.parts]
         except ValueError:
             pass

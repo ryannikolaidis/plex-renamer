@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from pathlib import Path, PurePath
 
-from plex_renamer.parser.models import Sidecar
+from plex_renamer.parser.models import Sidecar, SidecarKind
 from plex_renamer.parser.skip import (
     METADATA_EXTS,
     SUBTITLE_EXTS,
@@ -69,6 +69,18 @@ def parse_sidecar_name(path: PurePath) -> tuple[str, str | None, list[str]] | No
     or modifier. For ``Foo.en.forced.srt`` the stem is ``Foo``, language is
     ``en``, modifiers are ``["forced"]``. For ``Foo.srt`` (no language) the
     stem is ``Foo`` and language is ``None``.
+
+    Token-ordering constraint: modifiers MUST come AFTER the language code.
+    ``Foo.en.forced.srt`` parses cleanly; ``Foo.forced.en.srt`` does not —
+    the leading ``forced`` is consumed as a modifier and ``en`` is taken as
+    the language, leaving the stem as ``Foo``. The reverse-ordered form
+    ``Foo.forced.en.srt`` produced by some unusual tools is recognized but
+    the modifier-before-language path will keep the modifier consumed and
+    the stem clean. The single shape that is NOT supported is a stem that
+    contains the modifier token in a non-suffix position (e.g.
+    ``forced.en.srt`` where the leading ``forced`` is the entire stem). For
+    pairing with the video, the calling code matches on stem; modifiers
+    after the language guarantee that the stem matches the video's stem.
     """
     ext = path.suffix.lower()
     if ext not in SUBTITLE_EXTS and ext not in METADATA_EXTS:
@@ -187,8 +199,8 @@ def find_sidecars(video_path: Path, directory_files: list[Path]) -> list[Sidecar
     return sidecars
 
 
-def _kind_for_ext(ext: str) -> str:
-    """Map a sidecar extension to its kind."""
+def _kind_for_ext(ext: str) -> SidecarKind:
+    """Map a sidecar extension to its :class:`SidecarKind`."""
     if ext in SUBTITLE_EXTS:
         return "subtitle"
     if ext == ".nfo":

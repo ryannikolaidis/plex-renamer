@@ -63,6 +63,14 @@ _PART_MARKER_RE = re.compile(
 )
 
 # Quality / codec / HDR tokens. Order matters for readability only.
+#
+# Curated to avoid eating real English words from movie titles. We do NOT
+# include: extended, limited, internal, uncut, proper, remux. Those words
+# appear as legitimate title tokens often enough that the false-positive cost
+# dominates the recall benefit on release-scene names. ``uncut`` and
+# ``extended`` are still recognized as edition tokens via the bare-edition
+# list below — that path is fine because edition extraction preserves the
+# token rather than silently consuming it.
 _QUALITY_TOKENS = (
     "2160p",
     "1080p",
@@ -70,11 +78,13 @@ _QUALITY_TOKENS = (
     "576p",
     "480p",
     "4k",
+    "8k",
     "uhd",
     "hdr",
     "hdr10",
     "hdr10+",
     "dv",
+    "dolbyvision",
     "dolby",
     "atmos",
     "ddp5.1",
@@ -103,13 +113,7 @@ _QUALITY_TOKENS = (
     "webdl",
     "hdtv",
     "dvdrip",
-    "remux",
-    "proper",
     "repack",
-    "extended",
-    "uncut",
-    "limited",
-    "internal",
 )
 
 # Edition tokens (curly-brace style after Plex naming): {edition-Director's Cut}
@@ -177,6 +181,13 @@ class TokenizedName:
     year_span: tuple[int, int] | None = None
     """(start, end) span of the year token in the residue, if found."""
 
+    year_at_stem_start: bool = False
+    """True if the original stem begins with a year-shaped 4-digit run.
+
+    Used by the "year-as-title" recovery in :func:`extract.parse_file` so
+    titles like ``1984.mp4`` and ``2001 A Space Odyssey.mp4`` don't lose
+    the year to the year-extraction pass."""
+
     residue: str = ""
     """The cleaned filename with recognized atoms removed and dots/underscores
     converted to spaces. Multiple spaces preserved as a single space."""
@@ -210,6 +221,7 @@ def tokenize(stem: str) -> TokenizedName:
     """
     text = normalize_unicode(stem)
     result = TokenizedName()
+    result.year_at_stem_start = bool(re.match(r"\s*(?:19|20)\d{2}(?![\d])", text))
 
     # 2. Anchor braces — strip silently; we never preserve them through parse.
     text = _ANCHOR_BRACE_RE.sub(" ", text)
@@ -237,16 +249,31 @@ def tokenize(stem: str) -> TokenizedName:
     # 5. Season-only word ("Season 5") if we don't already have a season.
     if result.season is None:
         text = _consume_season_word(text, result)
+    text = _collapse_dangling_separators(text)
 
-    # 6. Year / date.
+    # 6. Year / date. Collapse separators between passes so a date followed
+    # by a stripped year doesn't leave a bare ``- - `` in the residue.
     text = _consume_date(text, result)
+    text = _collapse_dangling_separators(text)
     text = _consume_year(text, result)
+    text = _collapse_dangling_separators(text)
 
     # 7. Part marker.
     text = _consume_part_marker(text, result)
+    text = _collapse_dangling_separators(text)
 
     # 8. Quality + bare edition tokens.
     text = _consume_quality_and_edition(text, result)
+
+    # 8b. Trailing scene-style ``-Group`` suffix on the residue: when at least
+    # one quality token has been peeled, a trailing ``-<Word>`` is a group tag
+    # rather than part of the title. Without a quality context (no scene-style
+    # peel happened), a trailing dash-suffix is almost certainly title content
+    # (``Foo-Bar.mkv``) and we leave it alone. MUST run BEFORE the dangling-
+    # separator collapse, otherwise the dash between the title and the group
+    # would already have been folded into the title.
+    text = _consume_trailing_group_suffix(text, result)
+    text = _collapse_dangling_separators(text)
 
     # 9. Normalize separators and whitespace; assign residue.
     text = _SEPARATOR_RE.sub(" ", text)
@@ -304,12 +331,33 @@ def _classify_bracket_inner(inner: str, result: TokenizedName) -> bool:
     Note: the ``[Sxx.Eyy]`` shape is handled directly in
     :func:`_consume_bracket_groups` so it can leave a ``⟦SE⟧`` sentinel in
     the residue for the title/episode-title split.
+
+    Classification order matters: quality and edition checks come BEFORE the
+    group-tag fallback so ``[1080p]Title.mkv`` does not record ``1080p`` as a
+    group tag, and ``[Director Cut]`` does not lose its edition classification
+    to the short-token group bucket.
     """
 
     # Year in brackets like [2021].
     year_match = _YEAR_RE.fullmatch(inner)
     if year_match:
         result.year = int(year_match.group("year"))
+        return True
+
+    inner_clean = inner.strip()
+    inner_lower = inner_clean.lower()
+
+    # Quality token in brackets: [1080p], [HDR], [x264].
+    if inner_lower in {tok.lower() for tok in _QUALITY_TOKENS}:
+        if inner_lower not in result.quality_tokens:
+            result.quality_tokens.append(inner_lower)
+        return True
+
+    # Bare edition phrase in brackets: [Director Cut], [Theatrical Cut].
+    if inner_lower in {edition.lower() for edition in _BARE_EDITION_TOKENS}:
+        label = _titlecase_edition(inner_lower)
+        if label not in result.edition_tokens:
+            result.edition_tokens.append(label)
         return True
 
     # Group tag: a short alphanumeric (with possible dash/dot) sequence.
@@ -343,20 +391,54 @@ def _consume_plain_se(text: str, result: TokenizedName) -> str:
 
 
 def _consume_cross_se(text: str, result: TokenizedName) -> str:
-    """Pull 1x12 / 01x12 forms out of ``text``."""
+    """Pull 1x12 / 01x12 forms out of ``text``.
+
+    The ``<N>x<NN>`` pattern is too generic to match unconditionally:
+    ``Some Movie 1x12.mkv`` would otherwise be classified as TV with
+    season=1/episode=12, and resolution-shaped phrases like ``Foo 4x4.mkv``
+    would also bite. We require:
+
+    * The season number is ``<= 50`` (most shows don't exceed this).
+    * The marker is followed by either end-of-name, or a separator and then
+      a residue that doesn't look like the rest of an English title — in
+      practice we require either end-of-name OR a separator-and-rest. A
+      separator-and-rest matches TV (``Show - 1x12 - Title``); end-of-name
+      matches both TV (``show.1x12.mkv``) and the false-positive
+      (``Some Movie 1x12.mkv``).
+
+    The practical disambiguator is the leading context: we only treat the
+    marker as TV when it sits at a separator boundary AND is followed by
+    either end-of-name or a separator+residue. ``Some Movie 1x12`` has the
+    leading separator but is followed by end-of-name; that's still TV-shaped
+    under this rule. To eliminate that case we require the marker to either
+    sit at the end with no whitespace-padded preamble, OR be followed by a
+    title separator pattern.
+    """
     match = _CROSS_SE_RE.search(text)
     if not match:
         return text
     season = int(match.group("season"))
-    # 1x12 form: season must be plausible (<= 99); episode any range.
-    if season > 99:
+    if season > 50:
+        return text
+    start, end = match.start(), match.end()
+    trailing_raw = text[end:]
+    leading_raw = text[:start]
+    # A strong separator is dash, dot, or underscore — the explicit
+    # token-boundary markers a TV-shape filename uses. A bare space alone
+    # is too weak: ``Some Movie 1x12`` ends with a space-and-marker but is
+    # NOT a TV file.
+    has_leading_strong_sep = bool(re.search(r"[\-_.]\s*$", leading_raw))
+    has_trailing_strong_sep = bool(re.match(r"\s*[\-_.]\s*\S", trailing_raw))
+    # Allow plain TV shape "1x12" as the whole stem (no leading title at all).
+    is_bare_marker = leading_raw.strip() == "" and trailing_raw.strip() == ""
+    if not (is_bare_marker or has_leading_strong_sep or has_trailing_strong_sep):
         return text
     result.season = season
     result.episode = int(match.group("ep"))
     if match.group("ep_end"):
         result.episode_end = int(match.group("ep_end"))
-    result.se_span = (match.start(), match.end())
-    return text[: match.start()] + " ⟦SE⟧ " + text[match.end() :]
+    result.se_span = (start, end)
+    return text[:start] + " ⟦SE⟧ " + text[end:]
 
 
 def _consume_season_word(text: str, result: TokenizedName) -> str:
@@ -441,8 +523,13 @@ def _consume_quality_and_edition(text: str, result: TokenizedName) -> str:
     if not spans_to_remove:
         return text
 
-    # Apply removals back-to-front so earlier offsets stay valid.
-    spans_to_remove.sort(reverse=True)
+    # Dedupe by (start, end) before applying removal. A token that lives in
+    # both _QUALITY_TOKENS and _BARE_EDITION_TOKENS (or a future overlap of
+    # the same span coming from any pair of lists) would otherwise register
+    # twice on the removal list and double-cut the residue when applied
+    # back-to-front. This is a robustness fix even after the lists are
+    # disjoint, because future additions could recreate the overlap.
+    spans_to_remove = sorted(set(spans_to_remove), reverse=True)
     out = text
     for start, end in spans_to_remove:
         out = out[:start] + " " + out[end:]
@@ -461,15 +548,70 @@ def _whole_token_finditer(haystack: str, needle: str) -> list[tuple[int, int]]:
     return [(m.start(), m.end()) for m in pat.finditer(haystack)]
 
 
+def _collapse_dangling_separators(text: str) -> str:
+    """Collapse runs of dashes/dots/underscores/whitespace into single spaces.
+
+    When the token peeler removes a date / year / S/E span the residue often
+    keeps the dashes that surrounded it (e.g. ``The Daily Show -  - Guest
+    Episode``). Without a normalization pass between extractions those
+    dangling separators bleed into the title. We keep the operation
+    intentionally narrow: it only touches consecutive separator characters
+    and trims edges; it never reorders characters or drops content tokens.
+    """
+    # Repeated runs of separator chars (with optional whitespace between
+    # them) collapse to a single space.
+    collapsed = re.sub(r"(?:[\s\-_.]){2,}", " ", text)
+    # Trim trailing/leading separators.
+    return collapsed.strip(" -_.\t")
+
+
+def _consume_trailing_group_suffix(text: str, result: TokenizedName) -> str:
+    """Detect and peel a trailing ``-<Word>`` scene-style group suffix.
+
+    Scene release names commonly end with ``-Group`` after the quality block
+    (e.g. ``The.Lighthouse.2019.HDR.HEVC-Group``). After quality tokens have
+    been stripped, the residue ends with a bare ``- Group``. We peel it only
+    when at least one quality token has already been recorded: without a
+    quality context, a trailing dash-suffix on a residue is almost certainly
+    title content (``Foo-Bar.mkv``) and we leave it alone.
+
+    The first existing group_tag wins; if a leading ``[RG]`` already filled
+    ``group_tag``, the trailing word is still removed from the residue but
+    the group_tag value is not overwritten.
+    """
+    if not result.quality_tokens:
+        return text
+
+    match = re.search(r"(?:\s*[-_]\s*)([A-Za-z][A-Za-z0-9]{1,30})\s*$", text)
+    if not match:
+        return text
+    candidate = match.group(1)
+    # Don't peel a trailing word that is itself a recognized token.
+    candidate_lower = candidate.lower()
+    if candidate_lower in {tok.lower() for tok in _QUALITY_TOKENS}:
+        return text
+    if candidate_lower in {edition.lower() for edition in _BARE_EDITION_TOKENS}:
+        return text
+    if result.group_tag is None:
+        result.group_tag = candidate
+    return text[: match.start()].rstrip(" -_.")
+
+
 def _titlecase_edition(label: str) -> str:
-    """Render a bare edition token in titlecase, preserving punctuation."""
-    # Special-case "director's cut" → "Director's Cut".
+    """Render a bare edition token in titlecase, preserving punctuation.
+
+    The possessive ``'s`` tail stays lowercase so ``director's cut`` becomes
+    ``Director's Cut`` rather than ``Director'S Cut``.
+    """
     parts = label.split(" ")
     out: list[str] = []
     for part in parts:
         if "'" in part:
             head, _, tail = part.partition("'")
-            out.append(head.capitalize() + "'" + tail.capitalize())
+            # Possessive tail (single letter) stays lowercase. Longer tails
+            # get title-cased like the head.
+            tail_render = tail.lower() if len(tail) <= 1 else tail.capitalize()
+            out.append(head.capitalize() + "'" + tail_render)
         else:
             out.append(part.capitalize())
     return " ".join(out)
