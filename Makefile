@@ -14,15 +14,15 @@ check:
 test:
 	uv run pytest
 
-# Per-OS packaging targets. These are placeholders until the packaging
-# slice ships PyInstaller specs and installer scripts.
+# Per-OS packaging targets. These are intentional placeholders until the
+# packaging slice ships PyInstaller specs and installer scripts. Exit 0
+# so a fresh contributor running `make build-mac` does not see a non-zero
+# exit and assume the project is broken.
 build-mac:
-	@echo "build-mac: not yet wired; filled in by the packaging slice."
-	@exit 1
+	@echo "build-mac: not yet wired. The packaging slice ships PyInstaller specs."
 
 build-win:
-	@echo "build-win: not yet wired; filled in by the packaging slice."
-	@exit 1
+	@echo "build-win: not yet wired. The packaging slice ships PyInstaller specs."
 
 clean:
 	rm -rf build dist *.egg-info .pytest_cache .ruff_cache

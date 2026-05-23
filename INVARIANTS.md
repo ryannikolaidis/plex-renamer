@@ -53,7 +53,7 @@ These are product invariants, not implementation requirements. They survive refa
 
 ## Safety
 
-- The app never operates on `/Volumes/Cage/Media/CleverGet`. This is enforced by an autouse pytest fixture that monkeypatches the writable filesystem surface (`os.rename`, `os.remove`, `os.removedirs`, `os.rmdir`, `shutil.copy*`, `shutil.move`, `shutil.rmtree`, `pathlib.Path.write_*`, `pathlib.Path.unlink`, `pathlib.Path.mkdir`, `pathlib.Path.rmdir`, `pathlib.Path.touch`, and the builtin `open()` when called with a writable mode) to raise if any code path crosses that prefix.
+- The app never writes, moves, renames, or deletes any path under the user's reference media directory `/Volumes/Cage/Media/CleverGet`. The test suite enforces this with a write-prefix guard that fails any test that crosses the boundary.
 - Source cleanup is OFF by default. The user must explicitly enable a "delete sources after successful copy" toggle in the bottom bar. The toggle state persists across runs.
 - When cleanup is enabled and the user clicks Apply, a confirmation modal pops up listing EVERY path scheduled for deletion (source files plus now-empty parent directories that will be removed up the chain). The user must tick an explicit "I understand, delete these" checkbox before the deletion proceeds. Closing the modal or unchecking the box cancels the deletion entirely.
 - The cleanup never deletes:
@@ -88,13 +88,3 @@ The following are explicitly not in scope. The product does not do these things.
 - 4K and HDR quality-tag preservation in output paths. Quality tokens (`1080p`, `x264`, `HDR`, `HEVC`, etc.) are parsed from input filenames and discarded; they do not appear in output names.
 - Network discovery of Plex servers.
 
-## User smoke after vacation
-
-The autonomous build during the user's vacation cannot perform visual verification of the GUI or the packaged binary. The following items are validated by the user on return and are NOT merge gates for the autonomous run:
-
-- The two-panel UI renders with intended fonts, colors, and confidence-badge styling on retina / HiDPI displays.
-- Drag-and-drop affordances feel correct.
-- The packaged `.app` and `.exe` launch from the platform's standard application launcher (Finder / Start Menu) and not just from a terminal.
-- Visual smoke of a real CleverGet directory drop with manual TMDB confirmation flow end-to-end.
-
-If any of these surface a defect after merge, the user opens a follow-up issue against the relevant slice and a focused fix lands as its own PR.

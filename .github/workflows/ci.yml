@@ -27,8 +27,16 @@ jobs:
       - name: Set up Python
         run: uv python install 3.13
 
-      - name: Sync dependencies
-        run: uv sync --all-groups
+      - name: Lockfile is clean (no private indexes leaked)
+        shell: bash
+        run: |
+          if grep -q 'pkgs.dev.azure.com\|pkgs.dev\.amazonaws\|jfrog\|artifactory' uv.lock; then
+            echo "ERROR: uv.lock contains private-index URLs. Re-resolve from a clean env." >&2
+            exit 1
+          fi
+
+      - name: Sync dependencies (locked)
+        run: uv sync --locked --all-groups
 
       - name: Lint (ruff check)
         run: uv run ruff check .

@@ -8,6 +8,7 @@ Verify that the project skeleton is intact:
 
 from __future__ import annotations
 
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -15,15 +16,30 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 REQUIRED_INVARIANT_SECTIONS = [
-    "## Inputs",
-    "## Outputs",
-    "## Identification",
-    "## Confidence and review",
-    "## Sidecars and adjacent files",
-    "## Safety",
-    "## Persistence",
-    "## Out of scope",
+    "Inputs",
+    "Outputs",
+    "Identification",
+    "Confidence and review",
+    "Sidecars and adjacent files",
+    "Safety",
+    "Persistence",
+    "Out of scope",
 ]
+
+H2_HEADER_RE = re.compile(r"^## (.+)$", re.MULTILINE)
+
+
+def _invariants_sections() -> dict[str, str]:
+    """Return {section_title: body} for every H2 in INVARIANTS.md, robust to reordering."""
+    text = (REPO_ROOT / "INVARIANTS.md").read_text()
+    matches = list(H2_HEADER_RE.finditer(text))
+    sections: dict[str, str] = {}
+    for idx, match in enumerate(matches):
+        title = match.group(1).strip()
+        body_start = match.end()
+        body_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        sections[title] = text[body_start:body_end].strip()
+    return sections
 
 
 def test_invariants_file_exists() -> None:
@@ -34,22 +50,18 @@ def test_invariants_file_exists() -> None:
 
 
 def test_invariants_required_sections_present() -> None:
-    text = (REPO_ROOT / "INVARIANTS.md").read_text()
-    for section in REQUIRED_INVARIANT_SECTIONS:
-        assert section in text, f"INVARIANTS.md is missing required H2 section: {section!r}"
+    sections = _invariants_sections()
+    for required in REQUIRED_INVARIANT_SECTIONS:
+        assert required in sections, (
+            f"INVARIANTS.md is missing required H2 section: {required!r}. Found: {sorted(sections)}"
+        )
 
 
 def test_invariants_required_sections_non_empty() -> None:
-    text = (REPO_ROOT / "INVARIANTS.md").read_text()
-    for idx, section in enumerate(REQUIRED_INVARIANT_SECTIONS):
-        start = text.index(section) + len(section)
-        next_header = (
-            text.index(REQUIRED_INVARIANT_SECTIONS[idx + 1], start)
-            if idx + 1 < len(REQUIRED_INVARIANT_SECTIONS)
-            else len(text)
-        )
-        body = text[start:next_header].strip()
-        assert len(body) > 80, f"Section {section!r} is too short ({len(body)} chars)"
+    sections = _invariants_sections()
+    for required in REQUIRED_INVARIANT_SECTIONS:
+        body = sections[required]
+        assert len(body) > 80, f"Section {required!r} is too short ({len(body)} chars)"
 
 
 def test_pyproject_parses_and_declares_python_313() -> None:
@@ -78,6 +90,15 @@ def test_cli_version_flag_exits_zero(capsys) -> None:
     from plex_renamer import __version__
 
     assert __version__ in captured.out
+
+
+def test_cli_unknown_arg_exits_nonzero(capsys) -> None:
+    from plex_renamer.cli.main import app
+
+    code = app(["--nope"])
+    captured = capsys.readouterr()
+    assert code != 0, "unknown argument must not report success"
+    assert "unknown argument" in captured.err
 
 
 def test_python_runtime_meets_floor() -> None:
