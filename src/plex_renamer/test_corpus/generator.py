@@ -19,11 +19,12 @@ from __future__ import annotations
 import argparse
 import sys
 import unicodedata
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from plex_renamer.test_corpus.patterns import CORPUS_PATTERNS, CorpusEntry
 
 READONLY_PREFIX = "/Volumes/Cage/Media/CleverGet"
+_READONLY_PREFIX_PARTS: tuple[str, ...] = PurePath(READONLY_PREFIX).parts
 
 # Entries whose relative path should be NFD-encoded on disk. NFD-encoded
 # basenames are a real-world corpus quirk on macOS HFS+ that the parser
@@ -70,14 +71,29 @@ def _maybe_nfd(entry: CorpusEntry) -> str:
 
 
 def _refuse_readonly(path: Path) -> None:
-    """Raise if ``path`` is under the user's read-only reference directory."""
+    """Raise if ``path`` is under the user's read-only reference directory.
+
+    Uses a :class:`PurePath`-parts comparison so a sibling directory like
+    ``/Volumes/Cage/Media/CleverGetExtra`` does not false-match a naive
+    ``str.startswith`` against ``/Volumes/Cage/Media/CleverGet``. This is
+    the same containment check the project-wide conftest write-guard uses;
+    keeping the two implementations aligned is load-bearing — the
+    generator is the production-side guard, the conftest is the test-side
+    guard, and a string-prefix check would let CleverGetExtra slip past
+    the production side.
+    """
     try:
         resolved = path.resolve()
     except OSError:
         # Path may not exist yet; resolve(strict=False) is implicit in 3.13.
         resolved = path
 
-    if str(resolved).startswith(READONLY_PREFIX):
+    candidate_parts = PurePath(resolved).parts
+    prefix_len = len(_READONLY_PREFIX_PARTS)
+    if (
+        len(candidate_parts) >= prefix_len
+        and candidate_parts[:prefix_len] == _READONLY_PREFIX_PARTS
+    ):
         raise RuntimeError(f"refusing to write under read-only reference prefix: {resolved}")
 
 

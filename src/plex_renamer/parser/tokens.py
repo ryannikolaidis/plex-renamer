@@ -344,8 +344,7 @@ def _classify_bracket_inner(inner: str, result: TokenizedName) -> bool:
         result.year = int(year_match.group("year"))
         return True
 
-    inner_clean = inner.strip()
-    inner_lower = inner_clean.lower()
+    inner_lower = inner.strip().lower()
 
     # Quality token in brackets: [1080p], [HDR], [x264].
     if inner_lower in {tok.lower() for tok in _QUALITY_TOKENS}:

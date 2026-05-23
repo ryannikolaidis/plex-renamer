@@ -21,6 +21,7 @@ The parsing strategy is:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
@@ -93,29 +94,32 @@ def parse_file(path: Path, input_root: Path | None = None) -> ParseResult:
     title_candidate, episode_title = _split_title(tokens, kind)
 
     # Year-as-title recovery: when the filename is literally just a year
-    # (``1984.mp4``) or begins with one that IS part of the title
-    # (``2001 A Space Odyssey.mp4``), restore the year into the title
-    # candidate and clear the year. The planner can re-derive a year later
-    # from TMDB lookups; pinning a fake year here would corrupt the lookup.
-    # Alternative considered: keep ``year`` set and also expose the title
-    # with the year embedded. Rejected because the planner reads ``year``
-    # as authoritative; leaking the year into a title that is NOT actually
-    # about the year would mislead the lookup.
+    # (``1984.mp4``), restore the year into the title candidate and clear
+    # the year. The planner can re-derive a year later from TMDB lookups;
+    # pinning a fake year here would corrupt the lookup.
+    #
+    # This recovery is narrow on purpose. A stem-start year followed by
+    # more text is ambiguous: it can mean the year IS title content
+    # (``2001 A Space Odyssey``) or it can mean the year is a scene-style
+    # release prefix (``1999 The Matrix``, ``2010 Inception``). The
+    # stem-start position alone cannot disambiguate. Restricting to the
+    # "residue empty after year extraction" case (Case A only) keeps the
+    # ``1984.mp4`` win without regressing the much more common
+    # ``<year> <Title>`` scene shape, where the year is the correct
+    # extraction and the title is the residue.
+    #
+    # Alternative considered: keep both Case A and Case B (year was at
+    # stem start with non-empty residue). Rejected because Case B
+    # false-fires on scene-style year-prefix files, which dominate the
+    # observed corpus far more than year-as-title-prefix titles like
+    # ``2001 A Space Odyssey``.
     if (
         kind == "movie"
         and tokens.year is not None
         and tokens.year_at_stem_start
-        and (title_candidate is None or _starts_with_year(title_candidate) is False)
+        and (title_candidate is None or not title_candidate.strip())
     ):
-        # Case A: residue is empty (year was the entire stem).
-        # Case B: residue does not already contain the year (year was at the
-        #         start of the stem and was peeled, but the title carries it
-        #         semantically — e.g. ``2001 A Space Odyssey``).
-        restored_year = str(tokens.year)
-        if title_candidate is None or not title_candidate.strip():
-            title_candidate = restored_year
-        else:
-            title_candidate = f"{restored_year} {title_candidate}".strip()
+        title_candidate = str(tokens.year)
         year_to_emit: int | None = None
     else:
         year_to_emit = tokens.year
@@ -243,13 +247,6 @@ def _split_title(
     return (cleaned or None, None)
 
 
-def _starts_with_year(text: str) -> bool:
-    """Whether ``text`` begins with a 4-digit year-shaped run."""
-    import re
-
-    return bool(re.match(r"\s*(?:19|20)\d{2}(?![\d])", text))
-
-
 def _clean_residue(text: str) -> str:
     """Trim, collapse dashes, and strip trailing/leading punctuation."""
     cleaned = text.replace("⟦SE⟧", " ")
@@ -298,8 +295,6 @@ def _apply_parent_hints(tokens: TokenizedName, parent_dirs: list[str]) -> None:
 
 def _year_from_dir(name: str) -> int | None:
     """Extract a four-digit year from a parent directory name like ``Movie (2010)``."""
-    import re
-
     match = re.search(r"\b((?:19|20)\d{2})\b", name)
     if match:
         return int(match.group(1))
@@ -308,8 +303,6 @@ def _year_from_dir(name: str) -> int | None:
 
 def _season_from_dir(name: str) -> int | None:
     """Extract a season number from a parent dir name like ``Season 5`` or ``S03``."""
-    import re
-
     # "Season N" or "Season NN".
     match = re.fullmatch(r"\s*Season\s+(\d{1,3})\s*", name, flags=re.IGNORECASE)
     if match:

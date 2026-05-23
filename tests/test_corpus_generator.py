@@ -14,7 +14,7 @@ import pytest
 
 from plex_renamer.parser import parse_tree
 from plex_renamer.test_corpus import CORPUS_PATTERNS, build_corpus
-from plex_renamer.test_corpus.generator import READONLY_PREFIX
+from plex_renamer.test_corpus.generator import READONLY_PREFIX, _refuse_readonly
 from plex_renamer.test_corpus.patterns import entries_for_category
 
 
@@ -138,6 +138,19 @@ def test_nfd_entry_written_as_nfd(tmp_path: Path) -> None:
 def test_generator_refuses_readonly_prefix() -> None:
     with pytest.raises(RuntimeError, match="read-only"):
         build_corpus(Path(READONLY_PREFIX) / "child")
+
+
+def test_generator_refuse_readonly_allows_sibling_prefix() -> None:
+    """Generator's own guard must NOT false-match a sibling directory.
+
+    ``/Volumes/Cage/Media/CleverGetExtra`` shares the string prefix
+    ``/Volumes/Cage/Media/CleverGet`` but is a distinct directory. The
+    guard must use a PurePath.parts comparison, matching the conftest's
+    test-side check; a string-prefix check would incorrectly raise.
+    """
+    sibling = Path("/Volumes/Cage/Media/CleverGetExtra/whatever")
+    # MUST NOT raise. The function returns None on the allow path.
+    _refuse_readonly(sibling)
 
 
 def test_generated_tree_is_parseable(tmp_path: Path) -> None:

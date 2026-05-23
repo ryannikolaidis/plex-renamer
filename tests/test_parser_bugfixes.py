@@ -108,20 +108,62 @@ def test_year_only_filename_keeps_year_in_title(tmp_path: Path) -> None:
     assert result.year is None
 
 
-def test_year_at_title_start_keeps_year_in_title(tmp_path: Path) -> None:
-    """``2001 A Space Odyssey.mp4`` — the year is title content."""
-    result = _parse("2001 A Space Odyssey.mp4", root=tmp_path)
-    assert result.kind == "movie"
-    assert result.title_candidate == "2001 A Space Odyssey"
-    assert result.year is None
-
-
 def test_year_at_end_still_extracted_as_year(tmp_path: Path) -> None:
     """Sanity: a trailing year stays extracted as the year, not title."""
     result = _parse("The Matrix 1999.mp4", root=tmp_path)
     assert result.kind == "movie"
     assert result.title_candidate == "The Matrix"
     assert result.year == 1999
+
+
+# --- Year-as-title recovery: scene-style <year> <Title> regression tests ----
+#
+# A stem-start year followed by more text is ambiguous: it may be title
+# content (``2001 A Space Odyssey``) or a scene-style release prefix
+# (``1999 The Matrix``). The recovery narrows to the unambiguous case
+# (``1984.mp4`` — year IS the whole stem); scene-style files keep the
+# year extracted and the residue as the title. The cost is accepting
+# title degradation on the rare year-as-title-prefix case.
+
+
+def test_scene_style_year_prefix_keeps_year_extraction(tmp_path: Path) -> None:
+    """``1999 The Matrix.mp4`` — scene-style year prefix, title is the residue."""
+    result = _parse("1999 The Matrix.mp4", root=tmp_path)
+    assert result.kind == "movie"
+    assert result.title_candidate == "The Matrix"
+    assert result.year == 1999
+
+
+def test_scene_style_year_prefix_2010_inception(tmp_path: Path) -> None:
+    result = _parse("2010 Inception.mp4", root=tmp_path)
+    assert result.kind == "movie"
+    assert result.title_candidate == "Inception"
+    assert result.year == 2010
+
+
+def test_scene_style_year_prefix_2010_dot_inception(tmp_path: Path) -> None:
+    """Dot-separator variant — same shape, same expected extraction."""
+    result = _parse("2010.Inception.mp4", root=tmp_path)
+    assert result.kind == "movie"
+    assert result.title_candidate == "Inception"
+    assert result.year == 2010
+
+
+def test_year_at_title_start_accepts_year_extraction(tmp_path: Path) -> None:
+    """``2001 A Space Odyssey.mp4`` — accepted cost of narrowing the recovery.
+
+    The year extracts (which is technically wrong for this title), and the
+    residue becomes the title. This is documented as the explicit trade-off:
+    we lose the rare ``<year> <Title>`` titles where the year IS title
+    content in exchange for not regressing the common scene-style
+    ``<year> <Title>`` shape where the year is a release prefix.
+    """
+    result = _parse("2001 A Space Odyssey.mp4", root=tmp_path)
+    assert result.kind == "movie"
+    assert result.year == 2001
+    # Title degradation accepted: the residue contains the rest of the title.
+    assert result.title_candidate is not None
+    assert "Space Odyssey" in result.title_candidate
 
 
 # --- Fix 4: parent_dirs resolves input_root ---------------------------------
