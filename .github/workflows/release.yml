@@ -118,7 +118,12 @@ jobs:
 
       - name: Build installer (Windows)
         if: runner.os == 'Windows'
-        run: makensis -DAPP_VERSION=${{ steps.app_version.outputs.version }} packaging/installer/nsis_script.nsi
+        # The argument MUST be quoted: PowerShell otherwise parses
+        # ``-DAPP_VERSION=0.1.0`` as ``-DAPP_VERSION=0`` followed by
+        # ``.1.0`` (a member-access expression), leading makensis to
+        # report ``Can't open script ".1.0"``. Quoting forces a single
+        # native-command argument across the dot-separated version.
+        run: makensis "-DAPP_VERSION=${{ steps.app_version.outputs.version }}" packaging/installer/nsis_script.nsi
 
       - name: Upload Windows artifacts
         if: runner.os == 'Windows'
