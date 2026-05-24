@@ -1,0 +1,21 @@
+/* plex-renamer Qt stylesheet.
+
+   Kept small on purpose: the GUI uses native widget styling by default,
+   and the stylesheet only customizes a few load-bearing things (panel
+   separators, drop-zone hover, badge spacing). */
+
+QWidget#drop-zone {
+    background-color: #f7f7f7;
+    border: 2px dashed #888;
+    border-radius: 6px;
+}
+
+QWidget#source-panel,
+QWidget#target-panel {
+    background-color: #ffffff;
+}
+
+QPushButton#apply-btn {
+    font-weight: bold;
+    padding: 6px 18px;
+}
