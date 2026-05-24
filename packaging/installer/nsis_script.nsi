@@ -42,17 +42,20 @@ UninstPage instfiles
 Section "Install"
     SetOutPath "$INSTDIR"
 
-    ; CLI bundle: one-folder PyInstaller dist.
-    ; The ``*.*`` pattern matches more reliably than ``*`` in NSIS's /r
-    ; mode; the bare ``*`` glob can return "no files found" on
-    ; PyInstaller 6.x layouts where the top level contains only an .exe
-    ; plus an ``_internal/`` directory.
+    ; CLI bundle: one-folder PyInstaller 6.x dist with
+    ; ``dist\plex-renamer-cli\plex-renamer.exe`` at the top and
+    ; ``dist\plex-renamer-cli\_internal\`` containing the runtime. NSIS's
+    ; ``File /r`` with a glob (``*`` or ``*.*``) reports "no files found"
+    ; on this layout; list the .exe + the _internal folder explicitly
+    ; instead.
     SetOutPath "$INSTDIR\cli"
-    File /r "dist\plex-renamer-cli\*.*"
+    File "dist\plex-renamer-cli\plex-renamer.exe"
+    File /r "dist\plex-renamer-cli\_internal"
 
-    ; GUI bundle: one-folder PyInstaller dist.
+    ; GUI bundle: same layout, same per-source listing.
     SetOutPath "$INSTDIR\gui"
-    File /r "dist\plex-renamer-gui\*.*"
+    File "dist\plex-renamer-gui\plex-renamer-gui.exe"
+    File /r "dist\plex-renamer-gui\_internal"
 
     ; Start-menu shortcut to the GUI.
     CreateDirectory "$SMPROGRAMS\${APP_NAME}"
