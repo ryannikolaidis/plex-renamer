@@ -26,6 +26,7 @@ dev = [
     "pytest-qt>=4.4",
     "ruff>=0.7",
     "responses>=0.25",
+    "pyinstaller>=6.11",
 ]
 
 [build-system]
