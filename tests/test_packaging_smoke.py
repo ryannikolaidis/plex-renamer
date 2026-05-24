@@ -32,11 +32,14 @@ from pathlib import Path
 
 import pytest
 
-# The test is only meaningful when a built binary exists. We skip
-# outside CI to keep the local ``uv run pytest`` invocation fast and
-# to avoid a confusing "test not found" error when the dist folder
-# isn't present.
-_IS_CI = os.environ.get("CI") == "true"
+# The test is only meaningful when a built binary exists. The release
+# workflow sets PLEX_RENAMER_DIST_DIR to the PyInstaller output dir
+# before invoking pytest; the regular CI workflow doesn't, so this
+# test correctly skips during the test/lint matrix and runs only
+# under the release pipeline. Locally, opt in by exporting
+# PLEX_RENAMER_DIST_DIR=dist/plex-renamer-cli after `make build-mac`
+# (or the Windows equivalent).
+_SMOKE_ACTIVE = bool(os.environ.get("PLEX_RENAMER_DIST_DIR"))
 
 
 def _candidate_dist_dirs() -> list[Path]:
@@ -59,7 +62,10 @@ def _find_binary() -> Path | None:
     return None
 
 
-@pytest.mark.skipif(not _IS_CI, reason="Packaging smoke runs only in CI (CI=true)")
+@pytest.mark.skipif(
+    not _SMOKE_ACTIVE,
+    reason="Packaging smoke runs only when PLEX_RENAMER_DIST_DIR is set",
+)
 def test_built_cli_responds_to_version() -> None:
     """The bundled ``plex-renamer --version`` returns 0 with a version string.
 
