@@ -43,12 +43,16 @@ Section "Install"
     SetOutPath "$INSTDIR"
 
     ; CLI bundle: one-folder PyInstaller dist.
+    ; The ``*.*`` pattern matches more reliably than ``*`` in NSIS's /r
+    ; mode; the bare ``*`` glob can return "no files found" on
+    ; PyInstaller 6.x layouts where the top level contains only an .exe
+    ; plus an ``_internal/`` directory.
     SetOutPath "$INSTDIR\cli"
-    File /r "dist\plex-renamer-cli\*"
+    File /r "dist\plex-renamer-cli\*.*"
 
     ; GUI bundle: one-folder PyInstaller dist.
     SetOutPath "$INSTDIR\gui"
-    File /r "dist\plex-renamer-gui\*"
+    File /r "dist\plex-renamer-gui\*.*"
 
     ; Start-menu shortcut to the GUI.
     CreateDirectory "$SMPROGRAMS\${APP_NAME}"
