@@ -42,20 +42,21 @@ UninstPage instfiles
 Section "Install"
     SetOutPath "$INSTDIR"
 
-    ; CLI bundle: one-folder PyInstaller 6.x dist with
-    ; ``dist\plex-renamer-cli\plex-renamer.exe`` at the top and
-    ; ``dist\plex-renamer-cli\_internal\`` containing the runtime. NSIS's
-    ; ``File /r`` with a glob (``*`` or ``*.*``) reports "no files found"
-    ; on this layout; list the .exe + the _internal folder explicitly
-    ; instead.
+    ; CLI bundle: one-folder PyInstaller 6.x dist with the .exe at the
+    ; top and an _internal\ directory holding the runtime. NSIS resolves
+    ; File paths relative to the SCRIPT'S directory (packaging\installer\),
+    ; not the makensis invocation directory, so the dist/ tree at the
+    ; repo root is two parents up. List the .exe + the _internal folder
+    ; explicitly (the bare * glob misses _internal\ on PyInstaller 6
+    ; layouts; *.* misses the dot-less directory too).
     SetOutPath "$INSTDIR\cli"
-    File "dist\plex-renamer-cli\plex-renamer.exe"
-    File /r "dist\plex-renamer-cli\_internal"
+    File "..\..\dist\plex-renamer-cli\plex-renamer.exe"
+    File /r "..\..\dist\plex-renamer-cli\_internal"
 
     ; GUI bundle: same layout, same per-source listing.
     SetOutPath "$INSTDIR\gui"
-    File "dist\plex-renamer-gui\plex-renamer-gui.exe"
-    File /r "dist\plex-renamer-gui\_internal"
+    File "..\..\dist\plex-renamer-gui\plex-renamer-gui.exe"
+    File /r "..\..\dist\plex-renamer-gui\_internal"
 
     ; Start-menu shortcut to the GUI.
     CreateDirectory "$SMPROGRAMS\${APP_NAME}"

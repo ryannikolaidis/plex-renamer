@@ -57,15 +57,26 @@ jobs:
 
       - name: Build .dmg (macOS)
         if: runner.os == 'macOS'
+        # hdiutil occasionally fails with "Resource busy" on macos-latest
+        # when Spotlight or Time Machine has the source folder open;
+        # retry up to 3 times with a short backoff. hdiutil is otherwise
+        # deterministic, so the retry only ever masks the flake.
         run: |
           mkdir -p dist/dmg-staging
           cp -R dist/plex-renamer.app dist/dmg-staging/
           cp -R dist/plex-renamer-cli dist/dmg-staging/
-          hdiutil create \
-            -volname plex-renamer \
-            -srcfolder dist/dmg-staging \
-            -ov -format UDZO \
-            dist/plex-renamer.dmg
+          for attempt in 1 2 3; do
+            if hdiutil create \
+                -volname plex-renamer \
+                -srcfolder dist/dmg-staging \
+                -ov -format UDZO \
+                dist/plex-renamer.dmg; then
+              break
+            fi
+            echo "hdiutil attempt ${attempt} failed; sleeping then retrying"
+            sleep 5
+          done
+          test -f dist/plex-renamer.dmg
 
       - name: Upload macOS artifacts
         if: runner.os == 'macOS'
@@ -104,15 +115,6 @@ jobs:
         run: |
           choco install -y nsis --no-progress
           echo "C:\Program Files (x86)\NSIS" >> $env:GITHUB_PATH
-
-      - name: Inspect PyInstaller dist (Windows debug)
-        if: runner.os == 'Windows'
-        # One-shot debug step that surfaces the actual on-disk layout
-        # PyInstaller produced. If NSIS later complains the files are
-        # missing, this log line tells us whether the dist dir + the
-        # expected .exe + _internal/ are actually where we think.
-        run: |
-          Get-ChildItem dist -Recurse -Depth 2 | Select-Object FullName | Format-Table -AutoSize
 
       - name: Read app version (Windows)
         if: runner.os == 'Windows'
