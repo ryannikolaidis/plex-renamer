@@ -12,7 +12,16 @@
 ; unsigned for the first release; signing is a follow-up.
 
 !define APP_NAME "plex-renamer"
-!define APP_VERSION "0.1.0"
+; APP_VERSION is normally passed in via ``makensis -DAPP_VERSION=<version>``
+; from the release workflow, which sources the version from
+; ``packaging/pyinstaller_spec.app_version()`` so it stays in lockstep
+; with ``pyproject.toml``. The fallback is here so ad-hoc local
+; invocations (``makensis packaging/installer/nsis_script.nsi`` with no
+; -D flag) still succeed; the installed registry version then reads
+; ``0.0.0+dev`` to make the drift obvious.
+!ifndef APP_VERSION
+    !define APP_VERSION "0.0.0+dev"
+!endif
 !define APP_PUBLISHER "Ryan Nikolaidis"
 !define APP_INSTALL_DIR "$PROGRAMFILES64\${APP_NAME}"
 

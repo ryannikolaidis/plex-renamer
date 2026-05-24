@@ -10,6 +10,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -38,9 +39,6 @@ jobs:
 
       - name: Sync dependencies (locked)
         run: uv sync --locked --all-groups
-
-      - name: Install PyInstaller
-        run: uv pip install "pyinstaller>=6.11"
 
       # --- macOS build -------------------------------------------------
 
@@ -74,9 +72,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: plex-renamer-macos
-          path: |
-            dist/plex-renamer.dmg
-            dist/plex-renamer.app
+          # Only upload the .dmg. The .app bundle lives inside it; uploading
+          # the .app directory standalone through softprops/action-gh-release@v2
+          # later would scatter every internal file (Info.plist, Qt dylibs)
+          # as separate Release assets because the glob does not auto-archive
+          # directories. End users mount the .dmg and drag the .app to
+          # /Applications.
+          path: dist/plex-renamer.dmg
           if-no-files-found: error
 
       # --- Windows build -----------------------------------------------
@@ -97,19 +99,32 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install -y nsis --no-progress
 
+      - name: Read app version (Windows)
+        if: runner.os == 'Windows'
+        id: app_version
+        shell: bash
+        run: |
+          # The ``packaging/`` directory name collides with the PyPI
+          # ``packaging`` library, so the helper is loaded via
+          # importlib.util.spec_from_file_location rather than a normal import.
+          VERSION=$(uv run python -c "import importlib.util; spec = importlib.util.spec_from_file_location('h', 'packaging/pyinstaller_spec.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print(m.app_version())")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Build installer (Windows)
         if: runner.os == 'Windows'
-        run: makensis packaging/installer/nsis_script.nsi
+        run: makensis -DAPP_VERSION=${{ steps.app_version.outputs.version }} packaging/installer/nsis_script.nsi
 
       - name: Upload Windows artifacts
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: plex-renamer-windows
-          path: |
-            dist/plex-renamer-setup.exe
-            dist/plex-renamer-cli/plex-renamer.exe
-            dist/plex-renamer-gui/plex-renamer-gui.exe
+          # Only upload the NSIS installer. The bare CLI/GUI .exe files are
+          # PyInstaller one-folder launchers that require their sibling
+          # _internal/ runtime directories — they do not execute standalone
+          # when downloaded from a Release asset. The installer correctly
+          # bundles both folders into a single setup.exe.
+          path: dist/plex-renamer-setup.exe
           if-no-files-found: error
 
   release:
@@ -126,10 +141,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: true
-          # Glob picks up the .dmg, .app archive, setup.exe, and the bare
-          # CLI .exe from the matrix builds. The .app uploads as a folder
-          # which softprops turns into a tarball; that's the unsigned
-          # ad-hoc-signed bundle users can drop into /Applications.
+          # Two user-facing assets: the macOS .dmg (mount + drag to
+          # /Applications) and the Windows NSIS installer (run + follow
+          # prompts). Both wrap their respective PyInstaller one-folder
+          # bundles so the runtime sibling files reach the user intact.
           files: |
             artifacts/plex-renamer-macos/**
             artifacts/plex-renamer-windows/**

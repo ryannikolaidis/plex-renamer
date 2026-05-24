@@ -31,7 +31,6 @@ test:
 # local-Windows users with NSIS installed can run ``makensis
 # packaging/installer/nsis_script.nsi`` themselves.
 build-mac:
-	uv pip install "pyinstaller>=6.11"
 	uv run pyinstaller packaging/macos/plex-renamer.spec --distpath dist --workpath build --noconfirm
 	mkdir -p dist/dmg-staging
 	cp -R dist/plex-renamer.app dist/dmg-staging/
@@ -39,10 +38,9 @@ build-mac:
 	hdiutil create -volname plex-renamer -srcfolder dist/dmg-staging -ov -format UDZO dist/plex-renamer.dmg
 
 build-win:
-	uv pip install "pyinstaller>=6.11"
 	uv run pyinstaller packaging/windows/plex-renamer.spec --distpath dist --workpath build --noconfirm
 	@echo "build-win: PyInstaller bundles built under dist/. To produce the NSIS installer, run:"
-	@echo "    makensis packaging/installer/nsis_script.nsi"
+	@echo "    makensis -DAPP_VERSION=\$$(uv run python -c \"import importlib.util; s=importlib.util.spec_from_file_location('h','packaging/pyinstaller_spec.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.app_version())\") packaging/installer/nsis_script.nsi"
 	@echo "(requires NSIS on PATH; CI installs it via chocolatey)."
 
 clean:
