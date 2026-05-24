@@ -57,15 +57,26 @@ jobs:
 
       - name: Build .dmg (macOS)
         if: runner.os == 'macOS'
+        # hdiutil occasionally fails with "Resource busy" on macos-latest
+        # when Spotlight or Time Machine has the source folder open;
+        # retry up to 3 times with a short backoff. hdiutil is otherwise
+        # deterministic, so the retry only ever masks the flake.
         run: |
           mkdir -p dist/dmg-staging
           cp -R dist/plex-renamer.app dist/dmg-staging/
           cp -R dist/plex-renamer-cli dist/dmg-staging/
-          hdiutil create \
-            -volname plex-renamer \
-            -srcfolder dist/dmg-staging \
-            -ov -format UDZO \
-            dist/plex-renamer.dmg
+          for attempt in 1 2 3; do
+            if hdiutil create \
+                -volname plex-renamer \
+                -srcfolder dist/dmg-staging \
+                -ov -format UDZO \
+                dist/plex-renamer.dmg; then
+              break
+            fi
+            echo "hdiutil attempt ${attempt} failed; sleeping then retrying"
+            sleep 5
+          done
+          test -f dist/plex-renamer.dmg
 
       - name: Upload macOS artifacts
         if: runner.os == 'macOS'
