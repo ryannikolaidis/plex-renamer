@@ -1,7 +1,8 @@
 """Deletion confirmation modal: every path listed, checkbox gates Confirm.
 
-The modal lists EVERY scheduled deletion path and disables the Confirm
-button until the user checks the "I understand" checkbox. Closing or
+The modal lists EVERY scheduled deletion path (source files plus the
+parent dirs the executor will prune) and disables the Confirm button
+until the user checks the "I understand" checkbox. Closing or
 cancelling MUST NOT emit the ``confirmed`` signal.
 """
 
@@ -64,3 +65,31 @@ def test_reject_does_not_emit(qtbot) -> None:
     modal._consent.setChecked(True)
     modal.reject()
     assert received == []
+
+
+def test_modal_renders_parent_dirs_from_preview(qtbot, safe_tmp_path) -> None:
+    """When passed a deletion_preview output, the modal lists parents too."""
+    from plex_renamer.executor.cleanup import deletion_preview
+    from plex_renamer.gui.cleanup_confirm_modal import CleanupConfirmModal
+
+    input_root = safe_tmp_path / "in"
+    sub = input_root / "Movies" / "X"
+    sub.mkdir(parents=True)
+    src1 = sub / "a.mkv"
+    src2 = sub / "b.mkv"
+    src1.touch()
+    src2.touch()
+
+    preview = deletion_preview([src1, src2], input_root)
+    modal = CleanupConfirmModal(preview)
+    qtbot.addWidget(modal)
+
+    rendered = {modal._list.item(i).text() for i in range(modal._list.count())}
+    # Sources and the two empty parents (Movies/X and Movies) should all
+    # appear in the rendered list.
+    assert str(src1.resolve()) in rendered
+    assert str(src2.resolve()) in rendered
+    assert str(sub.resolve()) in rendered
+    assert str((input_root / "Movies").resolve()) in rendered
+    # input_root itself is never included by the preview.
+    assert str(input_root.resolve()) not in rendered

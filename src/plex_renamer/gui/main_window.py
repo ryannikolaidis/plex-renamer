@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from plex_renamer.config.settings import Settings
+from plex_renamer.executor.cleanup import deletion_preview
 from plex_renamer.gui.cleanup_confirm_modal import CleanupConfirmModal
 from plex_renamer.gui.collision_review import CollisionReview
 from plex_renamer.gui.drop_zone import DropZone
@@ -78,7 +79,17 @@ class MainWindow(QMainWindow):
     # without driving full engine plumbing.
     parsed_inputs = Signal(int)  # number of rows
     applied = Signal()
-    undone = Signal()
+    undone = Signal(Path)  # journal_path
+
+    # Orchestrator-facing signals: re-emitted from the contained widgets
+    # so the main_window is the single seam an external orchestrator
+    # subscribes to. The orchestrator runs TMDB / IMDb resolution, opens
+    # the show-anchor picker, and re-routes the edit-pane on a re-anchor
+    # request; none of that lives in MainWindow itself.
+    tmdb_search_requested = Signal(Path, str)  # source_path, query
+    imdb_resolve_requested = Signal(Path, str)  # source_path, imdb_id
+    group_clicked = Signal(str)  # group_key
+    reanchor_requested = Signal(Path)  # collision target
 
     def __init__(
         self,
@@ -99,6 +110,9 @@ class MainWindow(QMainWindow):
         self._item_model = ItemModel(self)
         self._collision_model = CollisionModel(self)
         self._last_journal: Path | None = None
+        # Explicit input root set by the orchestrator when the user drops
+        # a folder; falls back to the first row's parent if unset.
+        self._input_root: Path | None = None
 
         # Widgets.
         self._drop_zone = DropZone()
@@ -121,6 +135,15 @@ class MainWindow(QMainWindow):
         # Wire panels to edit pane.
         self._source_panel.row_clicked.connect(self._on_row_clicked)
         self._target_panel.row_clicked.connect(self._on_row_clicked)
+
+        # Re-emit child-widget signals at the main_window level so a
+        # single orchestrator subscribes once instead of reaching into
+        # every panel. The MainWindow itself does nothing with these
+        # signals; it only forwards them.
+        self._edit_pane.tmdb_search_requested.connect(self.tmdb_search_requested)
+        self._edit_pane.imdb_resolve_requested.connect(self.imdb_resolve_requested)
+        self._source_panel.group_clicked.connect(self.group_clicked)
+        self._collision_review.reanchor_requested.connect(self.reanchor_requested)
 
         self._build_layout()
 
@@ -188,7 +211,13 @@ class MainWindow(QMainWindow):
     def _on_apply_clicked(self) -> None:
         if self._settings.cleanup_enabled:
             sources = [r.parsed.source_path for r in self._item_model.rows() if not r.skip]
-            modal = CleanupConfirmModal(sources, parent=self)
+            # The modal must show EVERY path that will disappear, not just
+            # the source files. ``deletion_preview`` adds the parent dirs
+            # the executor's cleanup pass will prune up the chain so the
+            # user's consent matches the actual deletion set.
+            preview = deletion_preview(sources, self._settings_root_or_default())
+            paths_to_show = preview if preview else sources
+            modal = CleanupConfirmModal(paths_to_show, parent=self)
             modal.confirmed.connect(self._do_apply)
             modal.exec()
         else:
@@ -225,10 +254,24 @@ class MainWindow(QMainWindow):
         as input_root. We default to the first row's parent when nothing
         else is available.
         """
+        if self._input_root is not None:
+            return self._input_root
         rows = self._item_model.rows()
         if rows:
             return rows[0].source_path.parent
         return Path.cwd()
+
+    def set_input_root(self, input_root: Path) -> None:
+        """Set the input_root explicitly.
+
+        Called by the orchestrator when the user drops a folder so the
+        cleanup preview and apply pass operate on the user-supplied root
+        rather than a first-row-parent heuristic.
+        """
+        self._input_root = input_root
+
+    def input_root(self) -> Path | None:
+        return self._input_root
 
     # ----- Undo -----------------------------------------------------------
 
@@ -236,8 +279,7 @@ class MainWindow(QMainWindow):
         # The undo execution itself is engine code; the main window only
         # surfaces the request via :attr:`undone`. The default app entry
         # point connects this to ``undo_batch``.
-        self.undone.emit()
-        _ = journal_path  # silence unused
+        self.undone.emit(journal_path)
 
     # ----- Test accessors -------------------------------------------------
 

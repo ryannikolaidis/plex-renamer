@@ -12,7 +12,7 @@ Consumes a :class:`~plex_renamer.planner.RenamePlan` and:
 
 from __future__ import annotations
 
-from plex_renamer.executor.cleanup import cleanup_sources
+from plex_renamer.executor.cleanup import cleanup_sources, deletion_preview
 from plex_renamer.executor.copy import apply_plan
 from plex_renamer.executor.journal import Journal, JournalEntry
 from plex_renamer.executor.undo import undo_batch
@@ -22,5 +22,6 @@ __all__ = [
     "JournalEntry",
     "apply_plan",
     "cleanup_sources",
+    "deletion_preview",
     "undo_batch",
 ]
