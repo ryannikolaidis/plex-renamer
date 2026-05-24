@@ -78,7 +78,20 @@ def apply_plan(
         try:
             _copy_one(op, idx, journal, verify_hash=verify_hash)
             succeeded += 1
+        except _SidecarCopyError as sc_exc:
+            # The primary copy succeeded (verified on disk); only the
+            # sidecar entry is "failed". The op is partially-successful:
+            # count it as a failure for the batch summary, but keep the
+            # primary's verified status so undo can revert it cleanly.
+            journal.mark_failed(
+                sc_exc.sidecar_op_index,
+                error=str(sc_exc.__cause__ or sc_exc),
+                parent_op_index=idx,
+            )
+            failed += 1
         except Exception as exc:
+            # Primary copy failed (no sidecars attempted yet). The
+            # composite key (idx, None) correctly resolves to the primary.
             journal.mark_failed(idx, error=str(exc))
             failed += 1
 
@@ -96,8 +109,22 @@ def apply_plan(
     )
 
 
+class _SidecarCopyError(Exception):
+    """Raised when a sidecar copy fails after the primary already verified.
+
+    Carries the sidecar's local ``op_index`` so the caller can mark the
+    correct journal entry (composite key ``(sidecar_op_index, parent_op_index)``)
+    rather than corrupting the primary's verified status.
+    """
+
+    def __init__(self, sidecar_op_index: int, message: str) -> None:
+        super().__init__(message)
+        self.sidecar_op_index = sidecar_op_index
+
+
 def _copy_one(op: RenameOp, op_index: int, journal: Journal, *, verify_hash: bool) -> None:
-    # Primary file.
+    # Primary file. Exceptions here propagate to the outer ``except`` in
+    # ``apply_plan``, which marks the primary entry (op_index, None) failed.
     journal.add_pending(op_index, op.source, op.target)
     _do_copy(op.source, op.target)
     if not verify_size(op.source, op.target):
@@ -110,22 +137,29 @@ def _copy_one(op: RenameOp, op_index: int, journal: Journal, *, verify_hash: boo
     journal.mark_verified(op_index, bytes_copied=op.target.stat().st_size, sha256=sha)
 
     # Sidecars: separate journal entries keyed by (sidecar_pos, parent_op_index).
+    # Each sidecar copy is scoped so a failure surfaces as a
+    # ``_SidecarCopyError`` carrying the sidecar's local op_index. The
+    # primary remains verified — only the failing sidecar's entry flips
+    # to "failed".
     for i, (src, dst) in enumerate(op.sidecars):
-        journal.add_pending(i, src, dst, parent_op_index=op_index)
-        _do_copy(src, dst)
-        if not verify_size(src, dst):
-            raise RuntimeError(f"sidecar size mismatch on {dst}")
-        sub_sha: str | None = None
-        if verify_hash:
-            matched, sub_sha = verify_hash_with_digest(src, dst)
-            if not matched:
-                raise RuntimeError(f"sidecar sha256 mismatch on {dst}")
-        journal.mark_verified(
-            i,
-            bytes_copied=dst.stat().st_size,
-            sha256=sub_sha,
-            parent_op_index=op_index,
-        )
+        try:
+            journal.add_pending(i, src, dst, parent_op_index=op_index)
+            _do_copy(src, dst)
+            if not verify_size(src, dst):
+                raise RuntimeError(f"sidecar size mismatch on {dst}")
+            sub_sha: str | None = None
+            if verify_hash:
+                matched, sub_sha = verify_hash_with_digest(src, dst)
+                if not matched:
+                    raise RuntimeError(f"sidecar sha256 mismatch on {dst}")
+            journal.mark_verified(
+                i,
+                bytes_copied=dst.stat().st_size,
+                sha256=sub_sha,
+                parent_op_index=op_index,
+            )
+        except Exception as exc:
+            raise _SidecarCopyError(i, str(exc)) from exc
 
 
 def _do_copy(source: Path, target: Path) -> None:

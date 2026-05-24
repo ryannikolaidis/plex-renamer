@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 
+from plex_renamer.executor import copy as copy_module
 from plex_renamer.executor.cleanup import CleanupRefused, cleanup_sources
 from plex_renamer.executor.copy import apply_plan
 from plex_renamer.executor.journal import Journal
@@ -155,6 +156,229 @@ def test_journal_persists_parent_op_index_round_trip(tmp_path: Path) -> None:
     assert parents.count(None) == 2
     non_null = [p for p in parents if p is not None]
     assert non_null == [0]
+
+
+# --- Sidecar failure isolation --------------------------------------------
+#
+# A sidecar copy failure must not corrupt the primary's verified status.
+# The outer except in ``apply_plan`` only handles primary failures; sidecar
+# exceptions are scoped to the sidecar loop in ``_copy_one`` and surface as
+# a ``_SidecarCopyError`` that ``apply_plan`` translates into a
+# ``mark_failed`` call against the SIDECAR's composite key, not (idx, None).
+
+
+def _two_op_plan_with_two_sidecars_on_first(tmp_path: Path) -> RenamePlan:
+    """A 2-op plan where op 0 has two sidecars (so we can fail the second).
+
+    Failing the second sidecar means the first sidecar already verified —
+    a more thorough exercise of the journal state than failing the first.
+    """
+    src0 = tmp_path / "in" / "a.mkv"
+    src0_sc0 = tmp_path / "in" / "a.en.srt"
+    src0_sc1 = tmp_path / "in" / "a.es.srt"
+    src1 = tmp_path / "in" / "b.mkv"
+    for p in (src0, src0_sc0, src0_sc1, src1):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"data:" + p.name.encode())
+
+    target0 = tmp_path / "lib" / "Movies" / "A" / "A.mkv"
+    target0_sc0 = tmp_path / "lib" / "Movies" / "A" / "A.en.srt"
+    target0_sc1 = tmp_path / "lib" / "Movies" / "A" / "A.es.srt"
+    target1 = tmp_path / "lib" / "Movies" / "B" / "B.mkv"
+
+    op0 = RenameOp(
+        source=src0,
+        target=target0,
+        kind="movie",
+        anchor="tmdb-1",
+        edition=None,
+        confidence=0.9,
+        sidecars=(
+            (src0_sc0, target0_sc0),
+            (src0_sc1, target0_sc1),
+        ),
+    )
+    op1 = RenameOp(
+        source=src1,
+        target=target1,
+        kind="movie",
+        anchor="tmdb-2",
+        edition=None,
+        confidence=0.9,
+    )
+    return RenamePlan(
+        ops=(op0, op1),
+        collisions=(),
+        skipped=(),
+        movies_root=tmp_path / "lib" / "Movies",
+        tv_root=tmp_path / "lib" / "TV",
+        input_root=tmp_path / "in",
+    )
+
+
+def test_sidecar_failure_does_not_corrupt_primary_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing sidecar marks its OWN entry failed, leaving the primary verified.
+
+    Before the fix, the outer ``except`` in ``apply_plan`` called
+    ``mark_failed(idx, error=...)`` with no ``parent_op_index``. The
+    journal's composite-key lookup ``(idx, None)`` resolved to the PRIMARY
+    entry — just marked verified — and flipped its status to failed. The
+    primary file orphaned on disk and undo could not recover it. The fix
+    routes sidecar failures through ``_SidecarCopyError`` so the journal
+    entry at ``(sidecar_op_index, parent_op_index)`` is the one marked
+    failed.
+    """
+    plan = _two_op_plan_with_two_sidecars_on_first(tmp_path)
+
+    # Make the SECOND sidecar copy fail. The first sidecar still copies
+    # successfully so we exercise the case where one sidecar verified
+    # before a later one blew up.
+    original_do_copy = copy_module._do_copy
+    fail_target = plan.ops[0].sidecars[1][1]
+
+    def fail_on_second_sidecar(source: Path, target: Path) -> None:
+        if target == fail_target:
+            raise OSError("simulated sidecar copy failure")
+        original_do_copy(source, target)
+
+    monkeypatch.setattr(copy_module, "_do_copy", fail_on_second_sidecar)
+
+    result = apply_plan(plan, journal_dir=tmp_path / "journals", cleanup=False)
+    # op 0 counts as failed (its sidecar failed); op 1 is fine.
+    assert result.succeeded == 1
+    assert result.failed == 1
+
+    journal = Journal.load(result.journal_path)
+    # Four entries: op0 primary, op0 sidecar0, op0 sidecar1, op1 primary.
+    assert len(journal.entries) == 4
+
+    by_key = {(e.op_index, e.parent_op_index): e for e in journal.entries}
+    primary0 = by_key[(0, None)]
+    sidecar0 = by_key[(0, 0)]
+    sidecar1 = by_key[(1, 0)]
+    primary1 = by_key[(1, None)]
+
+    # Primary stays verified — this is the regression guard. Before the
+    # fix, the outer except corrupted this entry to "failed".
+    assert primary0.status == "verified"
+    assert primary0.target == str(plan.ops[0].target)
+    # First sidecar copied successfully before the second one failed.
+    assert sidecar0.status == "verified"
+    # Failing sidecar is the only "failed" entry.
+    assert sidecar1.status == "failed"
+    assert sidecar1.error is not None
+    assert "simulated sidecar copy failure" in sidecar1.error
+    # Op 1 unaffected — independent failure isolation.
+    assert primary1.status == "verified"
+
+    # The primary's target file still sits on disk (the copy succeeded).
+    assert plan.ops[0].target.exists()
+    # The first sidecar's target also on disk.
+    assert plan.ops[0].sidecars[0][1].exists()
+    # The failing sidecar's target was never created.
+    assert not plan.ops[0].sidecars[1][1].exists()
+
+    # all_verified is False (the sidecar failed) but verified_entries
+    # still contains the three verified files, so undo can clean them up.
+    assert journal.all_verified is False
+    verified_targets = {e.target for e in journal.verified_entries}
+    assert str(plan.ops[0].target) in verified_targets
+    assert str(plan.ops[0].sidecars[0][1]) in verified_targets
+    assert str(plan.ops[1].target) in verified_targets
+
+
+def test_undo_recovers_primary_when_sidecar_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``undo_batch`` reverts the primary target after a sidecar failed.
+
+    The bug: with the primary corrupted to "failed", undo's
+    ``verified_entries`` filter excluded it and the primary's target
+    stayed on disk. The fix keeps the primary "verified" so undo finds
+    and removes it.
+    """
+    plan = _two_op_plan_with_two_sidecars_on_first(tmp_path)
+    original_do_copy = copy_module._do_copy
+    fail_target = plan.ops[0].sidecars[1][1]
+
+    def fail_on_second_sidecar(source: Path, target: Path) -> None:
+        if target == fail_target:
+            raise OSError("simulated sidecar copy failure")
+        original_do_copy(source, target)
+
+    monkeypatch.setattr(copy_module, "_do_copy", fail_on_second_sidecar)
+
+    result = apply_plan(plan, journal_dir=tmp_path / "journals", cleanup=False)
+    journal = Journal.load(result.journal_path)
+
+    # Sanity: targets that copied are on disk.
+    assert plan.ops[0].target.exists()
+    assert plan.ops[0].sidecars[0][1].exists()
+    assert plan.ops[1].target.exists()
+    assert not plan.ops[0].sidecars[1][1].exists()
+
+    undo_result = undo_batch(journal)
+    # Three verified entries reverted: op0 primary, op0 sidecar0, op1 primary.
+    assert undo_result.reverted == 3
+
+    # Verified targets are gone now.
+    assert not plan.ops[0].target.exists()
+    assert not plan.ops[0].sidecars[0][1].exists()
+    assert not plan.ops[1].target.exists()
+    # The failing sidecar's target was never created and remains absent;
+    # undo did not touch it (its entry was "failed", not "verified").
+    assert not plan.ops[0].sidecars[1][1].exists()
+
+    # Sources still present (cleanup didn't run).
+    assert plan.ops[0].source.exists()
+    for src, _dst in plan.ops[0].sidecars:
+        assert src.exists()
+
+
+def test_primary_copy_failure_still_fails_correctly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Primary-copy failures continue to mark the primary entry failed.
+
+    Regression-of-regression check: the outer broad ``except Exception``
+    in ``apply_plan`` still catches primary failures and marks the
+    composite key ``(idx, None)`` — i.e. the primary — failed. Sidecars
+    are never attempted because the failure occurs before the sidecar
+    loop.
+    """
+    plan = _two_op_plan_with_two_sidecars_on_first(tmp_path)
+    original_do_copy = copy_module._do_copy
+    primary_target = plan.ops[0].target
+
+    def fail_on_primary(source: Path, target: Path) -> None:
+        if target == primary_target:
+            raise OSError("simulated primary copy failure")
+        original_do_copy(source, target)
+
+    monkeypatch.setattr(copy_module, "_do_copy", fail_on_primary)
+
+    result = apply_plan(plan, journal_dir=tmp_path / "journals", cleanup=False)
+    assert result.succeeded == 1
+    assert result.failed == 1
+
+    journal = Journal.load(result.journal_path)
+    # Only the primary entry for op 0 and op 1's entries exist; the
+    # sidecar loop never ran because the primary failed first.
+    keys = {(e.op_index, e.parent_op_index) for e in journal.entries}
+    assert (0, None) in keys
+    assert (1, None) in keys
+    # No sidecar entries — the loop did not start.
+    assert not any(e.parent_op_index is not None for e in journal.entries)
+
+    by_key = {(e.op_index, e.parent_op_index): e for e in journal.entries}
+    primary0 = by_key[(0, None)]
+    primary1 = by_key[(1, None)]
+    assert primary0.status == "failed"
+    assert primary0.error is not None
+    assert "simulated primary copy failure" in primary0.error
+    assert primary1.status == "verified"
 
 
 # --- Critical 2: always-disallowed prefix on macOS -------------------------
