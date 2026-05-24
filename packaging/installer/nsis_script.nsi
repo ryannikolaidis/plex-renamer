@@ -26,7 +26,10 @@
 !define APP_INSTALL_DIR "$PROGRAMFILES64\${APP_NAME}"
 
 Name "${APP_NAME}"
-OutFile "dist\plex-renamer-setup.exe"
+; OutFile resolves relative to the script's directory, same as File.
+; Walk two parents up to the repo root's dist/ where every other
+; artifact lives.
+OutFile "..\..\dist\plex-renamer-setup.exe"
 InstallDir "${APP_INSTALL_DIR}"
 RequestExecutionLevel admin
 ShowInstDetails show
