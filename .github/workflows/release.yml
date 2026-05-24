@@ -105,6 +105,15 @@ jobs:
           choco install -y nsis --no-progress
           echo "C:\Program Files (x86)\NSIS" >> $env:GITHUB_PATH
 
+      - name: Inspect PyInstaller dist (Windows debug)
+        if: runner.os == 'Windows'
+        # One-shot debug step that surfaces the actual on-disk layout
+        # PyInstaller produced. If NSIS later complains the files are
+        # missing, this log line tells us whether the dist dir + the
+        # expected .exe + _internal/ are actually where we think.
+        run: |
+          Get-ChildItem dist -Recurse -Depth 2 | Select-Object FullName | Format-Table -AutoSize
+
       - name: Read app version (Windows)
         if: runner.os == 'Windows'
         id: app_version
