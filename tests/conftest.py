@@ -21,6 +21,14 @@ real filesystem mutations) MUST NOT rebind these names; instead, the
 executor should call through a project-owned ``plex_renamer.executor.guards``
 shim that wraps every writable call site with the same prefix check. The
 conftest then becomes a defence-in-depth layer rather than the sole guard.
+
+The :func:`safe_tmp_path` fixture is provided for tests that exercise the
+cleanup pass. On macOS, pytest's stock ``tmp_path`` resolves through
+``/private/var/folders/...`` — a path the always-disallowed list now
+refuses outright. Tests that need to call :func:`cleanup_sources` (or
+``apply_plan(..., cleanup=True)``) use ``safe_tmp_path`` instead so the
+fixture root lives under the user's home dir, which is allowed for
+descendants beyond the home root itself.
 """
 
 from __future__ import annotations
@@ -28,6 +36,8 @@ from __future__ import annotations
 import builtins
 import os
 import shutil
+import tempfile
+from collections.abc import Generator
 from pathlib import Path, PurePath
 
 import pytest
@@ -239,6 +249,27 @@ def _wrap_path_two_arg_method(monkeypatch: pytest.MonkeyPatch, method_name: str)
         return original(self, target, *args, **kwargs)
 
     monkeypatch.setattr(Path, method_name, guarded)
+
+
+@pytest.fixture
+def safe_tmp_path() -> Generator[Path]:
+    """Provide a tmp path under the user's home dir, not under /private/var.
+
+    The cleanup pass refuses any path under ``/var``, ``/private``,
+    ``/tmp``, etc. (regardless of depth). On macOS, pytest's ``tmp_path``
+    resolves through ``/private/var/folders/...`` and is therefore not
+    usable as ``input_root`` for cleanup tests. We create a per-test
+    directory under ``~/.cache/plex-renamer-tests/`` which lands at
+    ``/Users/<user>/.cache/...`` — allowed because it's three components
+    deep below ``/Users``.
+    """
+    home_cache = Path.home() / ".cache" / "plex-renamer-tests"
+    home_cache.mkdir(parents=True, exist_ok=True)
+    tmpdir = Path(tempfile.mkdtemp(dir=str(home_cache)))
+    try:
+        yield tmpdir
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def _wrap_open(monkeypatch: pytest.MonkeyPatch) -> None:
