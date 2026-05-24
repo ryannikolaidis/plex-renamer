@@ -91,6 +91,52 @@ def _ensure_tmdb_key(settings: Settings) -> str | None:
     return key
 
 
+def build_window(settings: Settings, deps: OrchestratorDeps) -> MainWindow:
+    """Assemble :class:`MainWindow` + :class:`Orchestrator` + wrappers.
+
+    Returns the wired-up MainWindow ready to show. Extracted from
+    :func:`main` so an integration test can exercise the EXACT same
+    wrappers production builds. Any divergence between the test's
+    wiring and production's wiring would otherwise let regressions
+    sneak through the headless tests (e.g., a ``_parse_fn`` shape
+    drift) — see ``tests/test_gui_app_integration.py``.
+
+    The wrappers themselves are intentionally trivial: they exist to
+    bind the orchestrator's ``parse`` / ``apply`` / ``preview`` methods
+    into the ``MainWindow`` constructor.
+    """
+    orchestrator_holder: dict[str, Orchestrator] = {}
+
+    # The window's ``parse_fn`` is typed as
+    # ``Callable[[Path], list[ParseResult]]``. ``MainWindow._on_paths_dropped``
+    # wraps each non-skipped result in an ``ItemRow`` and calls
+    # ``item_model.set_rows(rows)`` exactly once, then emits
+    # ``parsed_inputs``. The orchestrator subscribes to that signal in
+    # :meth:`Orchestrator.connect` and runs resolution against the
+    # seated rows; the production flow and the headless tests therefore
+    # use the SAME parse_fn shape (return-the-list).
+    def _parse_fn(path: Path) -> list:
+        # Set the user's drop root explicitly so cleanup and apply use
+        # it instead of guessing from the first row's parent.
+        window.set_input_root(path)
+        orch = orchestrator_holder["orch"]
+        return orch.parse(path)
+
+    def _apply_fn(model, input_root):
+        orch = orchestrator_holder["orch"]
+        return orch.apply(model, input_root)
+
+    def _preview_fn(model, input_root):
+        orch = orchestrator_holder["orch"]
+        return orch.preview(model, input_root)
+
+    window = MainWindow(settings, parse_fn=_parse_fn, apply_fn=_apply_fn, preview_fn=_preview_fn)
+    orchestrator = Orchestrator(window.item_model(), deps, main_window=window)
+    orchestrator_holder["orch"] = orchestrator
+    orchestrator.connect(window)
+    return window
+
+
 def main(argv: list[str] | None = None) -> int:
     """Build the QApplication and run the event loop.
 
@@ -125,10 +171,6 @@ def main(argv: list[str] | None = None) -> int:
     tv_root = Path(settings.tv_root) if settings.tv_root else Path.home() / "TV"
     journal_dir = app_config_dir() / JOURNAL_SUBDIR
 
-    # Construct the orchestrator BEFORE the window so we can pass its
-    # parse/apply methods straight into the window's constructor.
-    # We bind the model later via ``MainWindow.item_model()`` after
-    # construction.
     deps = OrchestratorDeps(
         tmdb=tmdb,
         resolver=resolver,
@@ -138,32 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         cleanup_enabled=settings.cleanup_enabled,
     )
 
-    # The window needs a parse_fn that runs parse+resolve in one go so
-    # the source panel renders WITH candidates. The orchestrator's
-    # ``parse_and_resolve`` walks the tree, populates the model, and
-    # runs resolution; we then return the ParseResults so MainWindow's
-    # existing _on_paths_dropped logic stays a no-op (the rows are
-    # already in the model). Returning an empty list short-circuits
-    # MainWindow's row-build pass.
-    orchestrator_holder: dict[str, Orchestrator] = {}
-
-    def _parse_fn(path: Path) -> list:
-        orch = orchestrator_holder["orch"]
-        # Set the user's drop root explicitly so cleanup and apply use
-        # it instead of guessing from the first row's parent.
-        window.set_input_root(path)
-        orch.parse_and_resolve(path)
-        return []
-
-    def _apply_fn(model, input_root):
-        orch = orchestrator_holder["orch"]
-        return orch.apply(model, input_root)
-
-    window = MainWindow(settings, parse_fn=_parse_fn, apply_fn=_apply_fn)
-    orchestrator = Orchestrator(window.item_model(), deps, main_window=window)
-    orchestrator_holder["orch"] = orchestrator
-    orchestrator.connect(window)
-
+    window = build_window(settings, deps)
     window.show()
     return app.exec()
 

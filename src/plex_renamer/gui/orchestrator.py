@@ -108,13 +108,21 @@ class Orchestrator:
     # ----- Wiring ---------------------------------------------------------
 
     def connect(self, main_window: object) -> None:
-        """Hook every MainWindow signal up to the orchestrator handlers."""
+        """Hook every MainWindow signal up to the orchestrator handlers.
+
+        Also subscribes to ``MainWindow.parsed_inputs`` so the resolve
+        pass fires AFTER the drop handler has populated the model. This
+        is what keeps production's ``_parse_fn`` shape aligned with the
+        tests: ``_parse_fn`` returns a ``ParseResult`` list and the
+        orchestrator runs resolution on the seated rows out-of-band.
+        """
         self._main_window = main_window
         main_window.tmdb_search_requested.connect(self.on_tmdb_search)  # type: ignore[attr-defined]
         main_window.imdb_resolve_requested.connect(self.on_imdb_resolve)  # type: ignore[attr-defined]
         main_window.group_clicked.connect(self.on_group_clicked)  # type: ignore[attr-defined]
         main_window.reanchor_requested.connect(self.on_reanchor_requested)  # type: ignore[attr-defined]
         main_window.undone.connect(self.on_undo_requested)  # type: ignore[attr-defined]
+        main_window.parsed_inputs.connect(self._on_parsed_inputs)  # type: ignore[attr-defined]
 
     # ----- Parse + resolve ------------------------------------------------
 
@@ -376,12 +384,27 @@ class Orchestrator:
 
     # ----- Apply ----------------------------------------------------------
 
-    def apply(self, item_model: ItemModel, input_root: Path) -> RunReport:
-        """Build a plan from the model and call ``apply_plan``.
+    def _on_parsed_inputs(self, _count: int) -> None:
+        """Run resolution after the drop handler seats the rows.
 
-        This is the function the GUI hands to ``MainWindow(apply_fn=)``.
-        Rows without a candidate are dropped to the skipped list; rows
-        flagged ``skip`` are dropped silently.
+        ``MainWindow._on_paths_dropped`` builds ``ItemRow`` instances
+        from the ``ParseResult`` list returned by ``_parse_fn`` and
+        emits ``parsed_inputs``. This slot resolves every row's
+        candidate via the IMDb-fallback resolver so the badges + target
+        column populate without the drop handler having to know about
+        the resolver at all.
+        """
+        rows = self._model.rows()
+        self.resolve_rows(rows)
+
+    def _build_plan_from_model(
+        self, item_model: ItemModel, input_root: Path
+    ) -> tuple[object, list[tuple[Path, str]]]:
+        """Build a RenamePlan from the model's current state.
+
+        Returns the plan plus the skipped list (user-skipped rows). Rows
+        without a candidate fall through to ``build_plan_from_pairs``,
+        which classifies them as ``unresolved``.
         """
         pairs: list[tuple[ParseResult, Candidate | None]] = []
         skipped: list[tuple[Path, str]] = []
@@ -399,10 +422,82 @@ class Orchestrator:
             fetch_season=self._deps.tmdb.get_season,
             skipped=skipped,
         )
+        return plan, skipped
+
+    def preview(self, item_model: ItemModel, input_root: Path) -> object:
+        """Build a plan without applying it.
+
+        Populates the model's proposed ops (so the target panel renders
+        the proposed paths) and the collision model (so the collision
+        review panel surfaces conflicts). Returns the plan; callers can
+        inspect it for tests.
+        """
+        plan, _ = self._build_plan_from_model(item_model, input_root)
+        for op in plan.ops:
+            item_model.set_proposed_op(op.source, op)
+        if self._main_window is not None and hasattr(self._main_window, "collision_model"):
+            collision_model = self._main_window.collision_model()  # type: ignore[attr-defined]
+            collision_model.set_collisions(plan.collisions)
+        return plan
+
+    def apply(self, item_model: ItemModel, input_root: Path) -> RunReport:
+        """Build a plan from the model and call ``apply_plan``.
+
+        This is the function the GUI hands to ``MainWindow(apply_fn=)``.
+        Rows without a candidate are dropped to the skipped list; rows
+        flagged ``skip`` are dropped silently.
+
+        When the freshly-built plan has unresolved collisions, the
+        method populates the collision model (so the review widget
+        renders the conflicts) and returns a zero-count
+        :class:`RunReport` WITHOUT calling :func:`apply_plan`. The
+        MainWindow's pre-apply gate refuses the next Apply click until
+        the user resolves each collision; the SECOND Apply rebuilds the
+        plan applying the per-collision actions and proceeds.
+        """
+        plan, _ = self._build_plan_from_model(item_model, input_root)
+
+        # Surface collisions on the model. If any are unresolved, bail
+        # out without applying — the user resolves via the review panel
+        # and clicks Apply again. We update the model so the review
+        # widget repaints on the first Apply click rather than waiting
+        # for an explicit Preview.
+        collision_model = None
+        if self._main_window is not None and hasattr(self._main_window, "collision_model"):
+            collision_model = self._main_window.collision_model()  # type: ignore[attr-defined]
+
+        if plan.collisions:
+            actions = self._collision_actions_for(plan.collisions, collision_model)
+            unresolved = [c for c in plan.collisions if actions.get(c.target) is None]
+            if unresolved:
+                if collision_model is not None:
+                    collision_model.set_collisions(plan.collisions)
+                # Record proposed ops for the clean (non-colliding) rows
+                # so the target panel still renders them while the user
+                # works through the conflicts.
+                for op in plan.ops:
+                    item_model.set_proposed_op(op.source, op)
+                return RunReport(
+                    succeeded=0,
+                    skipped=len(plan.skipped),
+                    errored=0,
+                    journal_path=None,
+                    error_messages=(
+                        "Unresolved collisions; resolve in the review panel before applying.",
+                    ),
+                )
+            # Every remaining collision has an action; rebuild the op
+            # list applying the user's choices.
+            plan = self._apply_collision_actions(plan, actions)
+
         # Record proposed ops on the model so the target panel + the
         # reanchor lookup find the corresponding row.
         for op in plan.ops:
             item_model.set_proposed_op(op.source, op)
+        # Clear the collision model: every collision either resolved
+        # (consumed above) or never existed.
+        if collision_model is not None:
+            collision_model.set_collisions(())
 
         result = apply_plan(
             plan,
@@ -429,6 +524,141 @@ class Orchestrator:
             journal_path=result.journal_path,
             error_messages=tuple(error_messages),
         )
+
+    @staticmethod
+    def _collision_actions_for(collisions, collision_model) -> dict:
+        """Return ``{target: action}`` for current collisions from the model.
+
+        Targets not present in the collision model map to ``None``,
+        which the apply path treats as "unresolved — bail out".
+        """
+        actions: dict = {c.target: None for c in collisions}
+        if collision_model is None:
+            return actions
+        for item in collision_model.items():
+            if item.target in actions:
+                actions[item.target] = item.action
+        return actions
+
+    def _apply_collision_actions(self, plan, actions: dict):
+        """Return a new plan with per-collision actions consumed.
+
+        Action semantics (mirrors the brief):
+
+        * ``keep_first`` — first source keeps the target; later sources
+          drop out of the run.
+        * ``keep_both`` — first source keeps the target; later sources
+          get a ``_2``/``_3``/... stem suffix injected.
+        * ``reanchor`` — the user is expected to have updated the
+          source's anchor via the edit pane before the second Apply.
+          Drop the colliding sources from this run; they re-surface on
+          the next Preview if the user actually changed the anchor (in
+          which case the rebuilt plan won't collide), or as
+          ``unresolved`` if not.
+        """
+        # Pre-build a (source -> (parsed, candidate)) lookup so we can
+        # rebuild ops for sources that were stripped by detect_collisions.
+        from plex_renamer.planner.collision import detect_collisions
+
+        # Rebuild the "raw" op list (including the colliding ops) by
+        # calling the lower-level builders with the same pairs the plan
+        # was built from. We don't have direct access to the pre-strip
+        # ops, so we look up each colliding source's row in the model
+        # and synthesize the same op shape via build_plan_from_pairs on
+        # a per-collision basis. Simpler: just keep the collisions
+        # surfaced as-is and post-process targets here.
+
+        new_ops = list(plan.ops)
+        consumed_collisions: list = []
+
+        # We need the original ops for each collision source so we can
+        # rewrite their targets per action. Rebuild them via a minimal
+        # synthesis: each collision tells us the target + sources; we
+        # adopt the SHARED target as the canonical, and synthesize one
+        # op per source with that target (or a suffix variant). Anchor
+        # / kind / confidence aren't accessible from the Collision
+        # alone, so we re-pull them from the model's rows.
+        for col in plan.collisions:
+            action = actions.get(col.target)
+            if action is None:
+                continue
+            consumed_collisions.append(col)
+            ops_for_col = self._rebuild_ops_for_collision(col, plan)
+            if action == "keep_first" and ops_for_col:
+                new_ops.append(ops_for_col[0])
+            elif action == "keep_both":
+                for i, op in enumerate(ops_for_col):
+                    if i == 0:
+                        new_ops.append(op)
+                    else:
+                        new_ops.append(self._suffix_op_target(op, i + 1))
+            elif action == "reanchor":
+                # Drop these sources from this run. The user is meant
+                # to re-anchor and re-Preview.
+                continue
+
+        # detect_collisions a second time over new_ops in case the
+        # suffix path introduced a new conflict (unlikely but safe).
+        clean_ops, residual_collisions = detect_collisions(new_ops)
+        remaining_collisions = tuple(
+            c for c in plan.collisions if c not in consumed_collisions
+        ) + tuple(residual_collisions)
+        from plex_renamer.planner.models import RenamePlan
+
+        return RenamePlan(
+            ops=tuple(clean_ops),
+            collisions=remaining_collisions,
+            skipped=plan.skipped,
+            movies_root=plan.movies_root,
+            tv_root=plan.tv_root,
+            input_root=plan.input_root,
+            apply_editions=plan.apply_editions,
+            warnings=plan.warnings,
+        )
+
+    def _rebuild_ops_for_collision(self, collision, plan) -> list:
+        """Return a list of synthesized RenameOps, one per collision source.
+
+        Each op uses ``collision.target`` as its target and pulls
+        anchor/kind/confidence from the model's row for that source.
+        Sources without a candidate are dropped (they were unresolved).
+        """
+        from plex_renamer.planner.models import RenameOp
+        from plex_renamer.planner.movie_path import render_anchor
+
+        ops: list[RenameOp] = []
+        for source in collision.sources:
+            row = self._model.row_for(source)
+            if row is None or row.candidate is None:
+                continue
+            anchor = render_anchor(row.candidate)
+            ops.append(
+                RenameOp(
+                    source=source,
+                    target=collision.target,
+                    kind=row.candidate.kind,  # type: ignore[arg-type]
+                    anchor=anchor,
+                    edition=None,
+                    confidence=row.candidate.confidence,
+                )
+            )
+        return ops
+
+    @staticmethod
+    def _suffix_op_target(op, idx: int):
+        """Return a new op with ``_<idx>`` injected before the extension.
+
+        ``idx`` is 1-based for the user's mental model — the first
+        kept-both sibling is the canonical target (no suffix); ``idx=2``
+        for the second, etc.
+        """
+        from dataclasses import replace
+
+        target = op.target
+        stem = target.stem
+        suffix = target.suffix
+        new_target = target.with_name(f"{stem}_{idx}{suffix}")
+        return replace(op, target=new_target)
 
     # ----- Helpers --------------------------------------------------------
 

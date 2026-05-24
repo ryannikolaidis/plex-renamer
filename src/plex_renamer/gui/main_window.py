@@ -67,6 +67,11 @@ ParseFn = Callable[[Path], list[ParseResult]]
 # abstract so headless tests can stub the executor entirely.
 ApplyFn = Callable[[ItemModel, Path], RunReport]
 
+# Preview callback signature: builds the plan without applying. Populates
+# the target panel + collision model as a side effect; the return value
+# is opaque (the planner's RenamePlan) for tests that want to inspect it.
+PreviewFn = Callable[[ItemModel, Path], object]
+
 
 def _default_parse(input_root: Path) -> list[ParseResult]:
     return list(parse_tree(input_root))
@@ -97,6 +102,7 @@ class MainWindow(QMainWindow):
         *,
         parse_fn: ParseFn | None = None,
         apply_fn: ApplyFn | None = None,
+        preview_fn: PreviewFn | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -105,6 +111,7 @@ class MainWindow(QMainWindow):
         self._settings = settings
         self._parse_fn: ParseFn = parse_fn or _default_parse
         self._apply_fn: ApplyFn | None = apply_fn
+        self._preview_fn: PreviewFn | None = preview_fn
 
         # Models.
         self._item_model = ItemModel(self)
@@ -124,6 +131,10 @@ class MainWindow(QMainWindow):
         self._collision_review = CollisionReview(self._collision_model)
         self._run_report = RunReportWidget()
         self._run_report.undo_requested.connect(self._on_undo_requested)
+
+        self._preview_btn = QPushButton("Preview")
+        self._preview_btn.setObjectName("preview-btn")
+        self._preview_btn.clicked.connect(self._on_preview_clicked)
 
         self._apply_btn = QPushButton("Apply")
         self._apply_btn.setObjectName("apply-btn")
@@ -170,10 +181,11 @@ class MainWindow(QMainWindow):
         body.addWidget(side)
         body.setSizes([800, 400])
 
-        # Bottom bar: settings + apply.
+        # Bottom bar: settings on the left, Preview + Apply on the right.
         bottom = QHBoxLayout()
         bottom.addWidget(self._settings_btn)
         bottom.addStretch(1)
+        bottom.addWidget(self._preview_btn)
         bottom.addWidget(self._apply_btn)
 
         central = QWidget()
@@ -205,6 +217,19 @@ class MainWindow(QMainWindow):
     def _open_settings(self) -> None:
         dlg = SettingsDialog(self._settings, parent=self)
         dlg.exec()
+
+    # ----- Preview --------------------------------------------------------
+
+    def _on_preview_clicked(self) -> None:
+        """Build the plan via the orchestrator without applying.
+
+        Populates the target panel + collision model as a side effect
+        through ``preview_fn``. The button is a no-op when no preview_fn
+        is wired (e.g., headless tests that don't exercise this flow).
+        """
+        if self._preview_fn is None:
+            return
+        self._preview_fn(self._item_model, self._settings_root_or_default())
 
     # ----- Apply ----------------------------------------------------------
 
@@ -310,5 +335,8 @@ class MainWindow(QMainWindow):
     def apply_button(self) -> QPushButton:
         return self._apply_btn
 
+    def preview_button(self) -> QPushButton:
+        return self._preview_btn
 
-__all__ = ["ApplyFn", "MainWindow", "ParseFn"]
+
+__all__ = ["ApplyFn", "MainWindow", "ParseFn", "PreviewFn"]
