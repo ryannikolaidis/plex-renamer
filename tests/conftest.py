@@ -1,5 +1,14 @@
 """Project-wide pytest fixtures.
 
+GUI tests (``tests/test_gui_*.py``) use ``pytest-qt``'s ``qtbot`` fixture
+and rely on ``QT_QPA_PLATFORM=offscreen`` being set in the environment.
+The CI workflow sets that globally for the test step; locally, run GUI
+tests under ``QT_QPA_PLATFORM=offscreen uv run pytest`` to keep them
+from popping windows. This conftest deliberately does NOT mutate
+``os.environ["QT_QPA_PLATFORM"]`` because pytest-qt creates the
+QApplication eagerly and the value must already be set before the
+plugin loads.
+
 The :func:`_enforce_readonly_reference_dir` autouse fixture is load-bearing:
 the user's reference media tree at ``/Volumes/Cage/Media/CleverGet`` is
 READ-ONLY. No code path in this repo may write to, move, rename, or delete
@@ -249,6 +258,24 @@ def _wrap_path_two_arg_method(monkeypatch: pytest.MonkeyPatch, method_name: str)
         return original(self, target, *args, **kwargs)
 
     monkeypatch.setattr(Path, method_name, guarded)
+
+
+@pytest.fixture
+def gui_settings(tmp_path: Path) -> Generator[object]:
+    """Provide an isolated :class:`Settings` for GUI tests.
+
+    The config file lands in ``tmp_path / config.json`` so each test
+    starts from a clean slate; the path is captured on the returned
+    object so tests can re-read or assert against it.
+    """
+    from plex_renamer.config.settings import Settings  # noqa: PLC0415 — local import
+
+    cfg = tmp_path / "config.json"
+    # Use a guaranteed-nonexistent .env so first-run hydration finds
+    # nothing. ``Settings.load`` short-circuits if the file doesn't exist.
+    fake_env = tmp_path / "nonexistent.env"
+    settings = Settings.load(config_path=cfg, dotenv_path=fake_env)
+    yield settings
 
 
 @pytest.fixture

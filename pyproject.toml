@@ -17,6 +17,9 @@ dependencies = [
 [project.scripts]
 plex-renamer = "plex_renamer.cli.main:app"
 
+[project.gui-scripts]
+plex-renamer-gui = "plex_renamer.gui.app:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",
