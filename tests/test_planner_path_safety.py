@@ -6,8 +6,11 @@ and the always-disallowed prefix list.
 
 from __future__ import annotations
 
+import sys
 import unicodedata
 from pathlib import Path
+
+import pytest
 
 from plex_renamer.planner.path_safety import (
     has_at_least_three_components,
@@ -15,6 +18,11 @@ from plex_renamer.planner.path_safety import (
     path_length_warning,
     sanitize_component,
     sanitize_path,
+)
+
+_skip_on_windows = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX path semantics don't translate to Windows",
 )
 
 
@@ -64,6 +72,7 @@ def test_sanitize_component_empty_falls_back_to_underscore() -> None:
     assert sanitize_component("...") == "_"
 
 
+@_skip_on_windows
 def test_sanitize_path_preserves_anchor() -> None:
     p = Path("/Users/ryan/Movies/CON.mkv")
     safe = sanitize_path(p)
@@ -83,6 +92,7 @@ def test_path_length_warning_below_threshold() -> None:
     assert path_length_warning(short) is None
 
 
+@_skip_on_windows
 def test_is_always_disallowed_posix() -> None:
     """The POSIX always-disallowed list refuses cleanup."""
     for guarded in (
@@ -107,6 +117,7 @@ def test_is_always_disallowed_negative_for_descendants() -> None:
     assert not is_always_disallowed(Path("/Volumes/MyDisk/Movies"))
 
 
+@_skip_on_windows
 def test_has_at_least_three_components() -> None:
     assert not has_at_least_three_components(Path("/"))
     assert not has_at_least_three_components(Path("/Users"))

@@ -27,6 +27,7 @@ Three bugs covered:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,15 @@ from plex_renamer.planner.build import build_plan_from_pairs
 from plex_renamer.planner.models import RenameOp, RenamePlan
 from plex_renamer.planner.path_safety import is_always_disallowed
 from plex_renamer.tmdb.models import Candidate
+
+# POSIX-path assertions don't translate to Windows path semantics
+# (`/var/folders/...` resolves to a drive-letter-prefixed form). The
+# production guard targets the user's macOS dev machine; Linux + macOS
+# CI still exercise the mechanism.
+_skip_on_windows = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX always-disallowed prefix tests don't translate to Windows path semantics",
+)
 
 # --- Critical 1: journal sidecar key collision -----------------------------
 
@@ -395,6 +405,7 @@ def test_primary_copy_failure_still_fails_correctly(
         "/Library/Caches/file.mp4",
     ],
 )
+@_skip_on_windows
 def test_is_always_disallowed_blocks_subtree_descendants(guarded: str) -> None:
     """The check must fire on descendants of ``/var``, ``/private``, ``/tmp``, etc."""
     assert is_always_disallowed(Path(guarded)) is True
@@ -408,11 +419,13 @@ def test_is_always_disallowed_blocks_subtree_descendants(guarded: str) -> None:
         "/Volumes/Disk/Movies/x.mp4",
     ],
 )
+@_skip_on_windows
 def test_is_always_disallowed_allows_descendants_under_users(allowed: str) -> None:
     """User-home descendants beyond ``/Users/<one>`` are allowed."""
     assert is_always_disallowed(Path(allowed)) is False
 
 
+@_skip_on_windows
 def test_cleanup_refuses_tmp_dir_source_even_inside_input_root() -> None:
     """``input_root=/var/folders/<...>`` + source inside it is refused.
 
@@ -426,6 +439,7 @@ def test_cleanup_refuses_tmp_dir_source_even_inside_input_root() -> None:
         cleanup_sources([src], input_root=input_root)
 
 
+@_skip_on_windows
 def test_cleanup_refuses_private_var_descendant() -> None:
     """The macOS realpath form ``/private/var/folders/...`` is also refused."""
     input_root = Path("/private/var/folders/abc/T/scratch")
@@ -434,6 +448,7 @@ def test_cleanup_refuses_private_var_descendant() -> None:
         cleanup_sources([src], input_root=input_root)
 
 
+@_skip_on_windows
 def test_cleanup_refuses_tmp_descendant() -> None:
     """``/tmp/<anything>`` is refused regardless of depth."""
     input_root = Path("/tmp")
@@ -442,6 +457,7 @@ def test_cleanup_refuses_tmp_descendant() -> None:
         cleanup_sources([src], input_root=input_root)
 
 
+@_skip_on_windows
 def test_cleanup_refuses_applications_descendant() -> None:
     """``/Applications/<anything>`` is refused regardless of depth."""
     input_root = Path("/Applications/Movies")
