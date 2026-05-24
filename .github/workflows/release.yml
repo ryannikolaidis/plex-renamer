@@ -97,7 +97,13 @@ jobs:
 
       - name: Install NSIS (Windows)
         if: runner.os == 'Windows'
-        run: choco install -y nsis --no-progress
+        # chocolatey installs makensis under C:\Program Files (x86)\NSIS\ but
+        # does NOT refresh the current PowerShell session's PATH. Add the
+        # install dir to $GITHUB_PATH so the next step can call makensis
+        # without a fully-qualified path.
+        run: |
+          choco install -y nsis --no-progress
+          echo "C:\Program Files (x86)\NSIS" >> $env:GITHUB_PATH
 
       - name: Read app version (Windows)
         if: runner.os == 'Windows'
