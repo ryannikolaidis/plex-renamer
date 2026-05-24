@@ -28,19 +28,6 @@ CollisionReason = Literal[
 
 
 @dataclass(frozen=True)
-class EditionMatch:
-    """An edition token surfaced by the parser, attached to a Movie op.
-
-    The planner does NOT auto-apply editions into the output path. Slice 5's
-    UI shows the proposed edition and the user accepts or edits it before
-    apply.
-    """
-
-    edition: str
-    confidence: float
-
-
-@dataclass(frozen=True)
 class RenameOp:
     """A single copy the executor will perform.
 
@@ -58,6 +45,15 @@ class RenameOp:
     confidence: float
     sidecars: tuple[tuple[Path, Path], ...] = ()
     warnings: tuple[str, ...] = ()
+    detected_editions: tuple[str, ...] = ()
+    """Parser-surfaced edition tokens, regardless of ``apply_editions``.
+
+    Always populated from ``ParseResult.edition_tokens`` even when the
+    planner is invoked with ``apply_editions=False`` (the default). The
+    field is the GUI's read-only view of what the parser found so the UI
+    can render "we detected Director's Cut, accept?" without re-parsing
+    the source. The ``edition`` field above gates the actual path stamp.
+    """
 
 
 @dataclass(frozen=True)
@@ -148,6 +144,7 @@ def _op_to_dict(op: RenameOp) -> dict[str, Any]:
         "confidence": op.confidence,
         "sidecars": [[_path_str(s), _path_str(t)] for (s, t) in op.sidecars],
         "warnings": list(op.warnings),
+        "detected_editions": list(op.detected_editions),
     }
 
 
@@ -163,6 +160,7 @@ def _op_from_dict(d: dict[str, Any]) -> RenameOp:
         confidence=float(d.get("confidence", 0.0)),
         sidecars=sidecars,
         warnings=tuple(d.get("warnings", [])),
+        detected_editions=tuple(d.get("detected_editions", [])),
     )
 
 
@@ -187,7 +185,6 @@ def _collision_from_dict(d: dict[str, Any]) -> Collision:
 __all__ = [
     "Collision",
     "CollisionReason",
-    "EditionMatch",
     "PLAN_VERSION",
     "PurePosixPath",
     "RenameOp",

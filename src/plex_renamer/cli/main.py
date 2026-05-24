@@ -94,14 +94,19 @@ def app(argv: list[str] | None = None) -> int:
     try:
         parsed = parser.parse_args(args)
     except SystemExit as exc:
-        # argparse defaults to exit(2) on parse errors. Convert to a
-        # clean message + exit code the scaffold tests expect.
+        # argparse raises SystemExit(0) when the user asked for --help; in
+        # that case the help text has already been printed and we should
+        # exit cleanly without appending an "unknown argument" diagnostic.
+        # SystemExit(2) means a real parse error; format the message.
+        code = exc.code if isinstance(exc.code, int) else _UNKNOWN_ARG_EXIT
+        if code == 0:
+            return 0
         bad = args[0] if args else ""
         print(
             f"plex-renamer: unknown argument {bad!r}. See --help.",
             file=sys.stderr,
         )
-        return int(exc.code) if isinstance(exc.code, int) else _UNKNOWN_ARG_EXIT
+        return code
 
     if parsed.version:
         print(f"plex-renamer {__version__}")

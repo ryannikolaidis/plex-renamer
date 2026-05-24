@@ -171,6 +171,7 @@ def _build_movie_ops(
                 confidence=candidate.confidence,
                 sidecars=sidecars,
                 warnings=warnings,
+                detected_editions=tuple(parsed.edition_tokens),
             )
         )
     return ops

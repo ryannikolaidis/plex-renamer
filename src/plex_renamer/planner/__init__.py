@@ -16,11 +16,10 @@ inject a fake.
 from __future__ import annotations
 
 from plex_renamer.planner.build import build_plan
-from plex_renamer.planner.models import Collision, EditionMatch, RenameOp, RenamePlan
+from plex_renamer.planner.models import Collision, RenameOp, RenamePlan
 
 __all__ = [
     "Collision",
-    "EditionMatch",
     "RenameOp",
     "RenamePlan",
     "build_plan",

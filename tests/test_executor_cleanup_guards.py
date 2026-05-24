@@ -27,20 +27,20 @@ def test_cleanup_refuses_when_root_too_shallow(tmp_path: Path) -> None:
         cleanup_sources([Path("/Users/ryan/something")], input_root=Path("/Users"))
 
 
-def test_cleanup_refuses_for_non_descendant(tmp_path: Path) -> None:
+def test_cleanup_refuses_for_non_descendant(safe_tmp_path: Path) -> None:
     """A source outside input_root refuses."""
-    input_root = tmp_path / "in"
+    input_root = safe_tmp_path / "in"
     input_root.mkdir(parents=True)
-    outside = tmp_path / "outside" / "file.mkv"
+    outside = safe_tmp_path / "outside" / "file.mkv"
     outside.parent.mkdir(parents=True)
     outside.touch()
     with pytest.raises(CleanupRefused):
         cleanup_sources([outside], input_root=input_root)
 
 
-def test_cleanup_refuses_always_disallowed(tmp_path: Path) -> None:
+def test_cleanup_refuses_always_disallowed(safe_tmp_path: Path) -> None:
     """An always-disallowed path (e.g. /Users/<any>) refuses."""
-    input_root = tmp_path / "in"
+    input_root = safe_tmp_path / "in"
     input_root.mkdir(parents=True)
     # Synthesize a path that's a descendant but happens to be guarded.
     # /Users/ryan looks like input_root /Users/ryan; we just check the
@@ -49,9 +49,9 @@ def test_cleanup_refuses_always_disallowed(tmp_path: Path) -> None:
         cleanup_sources([Path("/Users/ryan")], input_root=Path("/Users/ryan/scratch"))
 
 
-def test_cleanup_deletes_sources_in_tree(tmp_path: Path) -> None:
-    """Happy path: sources land in tmp_path and get deleted."""
-    input_root = tmp_path / "in"
+def test_cleanup_deletes_sources_in_tree(safe_tmp_path: Path) -> None:
+    """Happy path: sources land in safe_tmp_path and get deleted."""
+    input_root = safe_tmp_path / "in"
     sub = input_root / "Movies" / "X"
     sub.mkdir(parents=True)
     src1 = sub / "a.mkv"
@@ -63,9 +63,9 @@ def test_cleanup_deletes_sources_in_tree(tmp_path: Path) -> None:
     assert not src2.exists()
 
 
-def test_cleanup_prunes_empty_descendants(tmp_path: Path) -> None:
+def test_cleanup_prunes_empty_descendants(safe_tmp_path: Path) -> None:
     """Empty dirs under input_root get removed up to but not including input_root."""
-    input_root = tmp_path / "in"
+    input_root = safe_tmp_path / "in"
     deep = input_root / "Movies" / "X" / "deep"
     deep.mkdir(parents=True)
     src = deep / "file.mkv"
@@ -78,9 +78,9 @@ def test_cleanup_prunes_empty_descendants(tmp_path: Path) -> None:
     assert input_root.exists()
 
 
-def test_cleanup_keeps_non_empty_parents(tmp_path: Path) -> None:
+def test_cleanup_keeps_non_empty_parents(safe_tmp_path: Path) -> None:
     """A parent with other contents stays."""
-    input_root = tmp_path / "in"
+    input_root = safe_tmp_path / "in"
     parent = input_root / "Movies"
     parent.mkdir(parents=True)
     src = parent / "x.mkv"
@@ -94,21 +94,21 @@ def test_cleanup_keeps_non_empty_parents(tmp_path: Path) -> None:
     assert parent.exists()
 
 
-def test_cleanup_refuses_zero_sources(tmp_path: Path) -> None:
+def test_cleanup_refuses_zero_sources(safe_tmp_path: Path) -> None:
     """Empty list returns False without raising."""
-    input_root = tmp_path / "in"
+    input_root = safe_tmp_path / "in"
     input_root.mkdir(parents=True)
     result = cleanup_sources([], input_root=input_root)
     assert result is False
 
 
-def test_cleanup_validates_all_before_deleting(tmp_path: Path) -> None:
+def test_cleanup_validates_all_before_deleting(safe_tmp_path: Path) -> None:
     """One bad source aborts the whole batch; no partial deletion."""
-    input_root = tmp_path / "in"
+    input_root = safe_tmp_path / "in"
     input_root.mkdir(parents=True)
     good = input_root / "good.mkv"
     good.touch()
-    bad = tmp_path / "elsewhere" / "bad.mkv"
+    bad = safe_tmp_path / "elsewhere" / "bad.mkv"
     bad.parent.mkdir(parents=True)
     bad.touch()
     with pytest.raises(CleanupRefused):

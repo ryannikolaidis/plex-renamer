@@ -10,9 +10,12 @@ The flow per op is::
        OR journal.mark_failed(op_index, error)
     6. for each sidecar pair, repeat 2-5
 
-Sidecars share the same op_index as the parent. They're recorded in the
-journal as separate entries with derived op_index keys (``<n>:s<i>``)
-so undo can revert them too.
+Sidecars are recorded as separate journal entries with
+``parent_op_index`` set to the primary's op_index and their own
+``op_index`` equal to the sidecar's position within the parent's
+sidecar tuple. The (op_index, parent_op_index) tuple is the journal's
+lookup key so a sidecar's local position cannot collide with a later
+primary op's index.
 """
 
 from __future__ import annotations
@@ -23,8 +26,7 @@ from pathlib import Path
 
 from plex_renamer.executor.cleanup import cleanup_sources
 from plex_renamer.executor.journal import Journal
-from plex_renamer.executor.verify import sha256_of, verify_size
-from plex_renamer.executor.verify import verify_hash as verify_hash_fn
+from plex_renamer.executor.verify import verify_hash_with_digest, verify_size
 from plex_renamer.planner.models import RenameOp, RenamePlan
 
 
@@ -102,40 +104,33 @@ def _copy_one(op: RenameOp, op_index: int, journal: Journal, *, verify_hash: boo
         raise RuntimeError(f"size mismatch on {op.target}")
     sha: str | None = None
     if verify_hash:
-        if not verify_hash_fn(op.source, op.target):
+        matched, sha = verify_hash_with_digest(op.source, op.target)
+        if not matched:
             raise RuntimeError(f"sha256 mismatch on {op.target}")
-        sha = sha256_of(op.target)
     journal.mark_verified(op_index, bytes_copied=op.target.stat().st_size, sha256=sha)
 
-    # Sidecars.
+    # Sidecars: separate journal entries keyed by (sidecar_pos, parent_op_index).
     for i, (src, dst) in enumerate(op.sidecars):
-        sub_index = _sidecar_index(op_index, i)
-        journal.add_pending(sub_index, src, dst)
+        journal.add_pending(i, src, dst, parent_op_index=op_index)
         _do_copy(src, dst)
         if not verify_size(src, dst):
             raise RuntimeError(f"sidecar size mismatch on {dst}")
         sub_sha: str | None = None
         if verify_hash:
-            if not verify_hash_fn(src, dst):
+            matched, sub_sha = verify_hash_with_digest(src, dst)
+            if not matched:
                 raise RuntimeError(f"sidecar sha256 mismatch on {dst}")
-            sub_sha = sha256_of(dst)
-        journal.mark_verified(sub_index, bytes_copied=dst.stat().st_size, sha256=sub_sha)
+        journal.mark_verified(
+            i,
+            bytes_copied=dst.stat().st_size,
+            sha256=sub_sha,
+            parent_op_index=op_index,
+        )
 
 
 def _do_copy(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, target)
-
-
-def _sidecar_index(op_index: int, sidecar_index: int) -> int:
-    """Encode a sidecar's id as a non-overlapping int derived from the parent.
-
-    We use ``op_index * 1000 + sidecar_index + 1``. The journal isn't
-    indexed by op_index for lookups; it's a list, so collisions only
-    matter for ``mark_*`` lookups by id. Plans rarely have >999 sidecars
-    on a single op so this is safe in practice.
-    """
-    return op_index * 1000 + sidecar_index + 1
 
 
 __all__ = ["ApplyResult", "apply_plan"]

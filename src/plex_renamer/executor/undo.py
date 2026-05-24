@@ -44,19 +44,24 @@ def undo_batch(journal: Journal) -> UndoResult:
     for entry in sorted(journal.verified_entries, key=lambda e: -len(Path(e.target).parts)):
         target = Path(entry.target)
         if not target.exists():
-            journal.mark_reverted(entry.op_index)
+            journal.mark_reverted(entry.op_index, parent_op_index=entry.parent_op_index)
             reverted += 1
             continue
         if journal.cleanup_ran and review_dir is not None:
             dest = review_dir / target.name
-            # If a name collision occurs (rare), suffix with op_index.
+            # If a name collision occurs (rare), suffix with the unique key.
             if dest.exists():
-                dest = review_dir / f"{target.stem}__op{entry.op_index}{target.suffix}"
+                key = entry.op_index
+                if entry.parent_op_index is not None:
+                    key_str = f"op{entry.parent_op_index}_sc{entry.op_index}"
+                else:
+                    key_str = f"op{key}"
+                dest = review_dir / f"{target.stem}__{key_str}{target.suffix}"
             shutil.move(str(target), str(dest))
             moved += 1
         else:
             target.unlink()
-        journal.mark_reverted(entry.op_index)
+        journal.mark_reverted(entry.op_index, parent_op_index=entry.parent_op_index)
         reverted += 1
         _prune_empty_dirs(target.parent, stop_at=Path(journal.library_root))
 

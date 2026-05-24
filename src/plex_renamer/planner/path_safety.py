@@ -46,11 +46,23 @@ _RESERVED_NAMES: frozenset[str] = frozenset(
 
 # Paths that cleanup MUST refuse to touch even when every other check
 # passes. Listed as POSIX strings; the comparator normalizes both sides.
-ALWAYS_DISALLOWED_POSIX: frozenset[str] = frozenset(
+#
+# Two flavors:
+#
+# * ALWAYS_DISALLOWED_POSIX_SUBTREES — refuse the prefix AND every
+#   descendant. ``/var`` blocks ``/var/folders/abc/T/scratch.mp4`` (a
+#   macOS per-user temp path); ``/private`` blocks
+#   ``/private/var/folders/...`` (the realpath form of the same temp
+#   dir); ``/tmp`` blocks ``/tmp/scratch.mp4``; etc. These are
+#   directories that NEVER contain media we should delete.
+# * ALWAYS_DISALLOWED_POSIX_EXACT_PLUS_ONE — refuse the prefix and
+#   refuse exactly-one-component-deeper, but allow deeper descendants.
+#   ``/Users`` refuses ``/Users`` and ``/Users/ryan`` (the home dir
+#   itself is sacred) but allows ``/Users/ryan/media/scratch.mp4``.
+#   Same shape for ``/Volumes``: refuse the mount, refuse the
+#   ``/Volumes/Disk`` mount root, allow content beneath.
+ALWAYS_DISALLOWED_POSIX_SUBTREES: frozenset[str] = frozenset(
     {
-        "/",
-        "/Users",
-        "/Volumes",
         "/private",
         "/System",
         "/Library",
@@ -58,6 +70,18 @@ ALWAYS_DISALLOWED_POSIX: frozenset[str] = frozenset(
         "/tmp",
         "/var",
     }
+)
+
+ALWAYS_DISALLOWED_POSIX_EXACT_PLUS_ONE: frozenset[str] = frozenset(
+    {
+        "/Users",
+        "/Volumes",
+    }
+)
+
+# Back-compat alias for callers / tests that look up the legacy union.
+ALWAYS_DISALLOWED_POSIX: frozenset[str] = (
+    ALWAYS_DISALLOWED_POSIX_SUBTREES | ALWAYS_DISALLOWED_POSIX_EXACT_PLUS_ONE | {"/"}
 )
 
 # Windows-style always-disallowed list. The comparator uses
@@ -134,10 +158,21 @@ def is_always_disallowed(path: Path) -> bool:
     canonical forms. Callers pass a real (resolved) path; comparison is
     structural (parts-based), not string-based.
 
-    On POSIX the list includes ``/Users/<any>`` and ``/Volumes/<any>``;
-    we approximate "<any>" as "exactly one component beyond /Users or
-    /Volumes" (so ``/Users/ryan`` matches but ``/Users/ryan/movies``
-    does not).
+    POSIX semantics:
+
+    * ``/`` matches verbatim.
+    * Subtree-disallowed prefixes (``/var``, ``/private``, ``/System``,
+      ``/Library``, ``/Applications``, ``/tmp``): the path is refused
+      when it equals the prefix OR is any descendant of it. This is
+      what catches ``/var/folders/<user>/T/scratch.mp4`` and the
+      realpath form ``/private/var/folders/...`` that macOS resolves
+      temp dirs through.
+    * Exact-plus-one prefixes (``/Users``, ``/Volumes``): refused when
+      equal to the prefix or exactly one component deeper
+      (``/Users/ryan``, ``/Volumes/Disk``). Content beneath those
+      (``/Users/ryan/media/x.mp4``) is allowed; the cleanup pass's
+      depth + descendant-of-input-root checks cover the home directory
+      from there.
     """
     # Normalize input to absolute POSIX-style for matching.
     s = str(path)
@@ -158,11 +193,29 @@ def is_always_disallowed(path: Path) -> bool:
         )
 
     pp = PurePosixPath(s)
-    pp_str = str(pp)
-    if pp_str in ALWAYS_DISALLOWED_POSIX:
+    if str(pp) == "/":
         return True
-    # /Users/<any> and /Volumes/<any>: exactly 3 parts including the root.
-    return len(pp.parts) == 3 and pp.parts[0] == "/" and pp.parts[1] in ("Users", "Volumes")
+
+    # Subtree-disallowed: refuse the prefix and every descendant.
+    for guarded in ALWAYS_DISALLOWED_POSIX_SUBTREES:
+        guarded_parts = PurePosixPath(guarded).parts
+        if len(pp.parts) >= len(guarded_parts) and pp.parts[: len(guarded_parts)] == guarded_parts:
+            return True
+
+    # Exact-plus-one: refuse the prefix and refuse exactly one component deeper.
+    for guarded in ALWAYS_DISALLOWED_POSIX_EXACT_PLUS_ONE:
+        guarded_parts = PurePosixPath(guarded).parts
+        # Equal to prefix.
+        if pp.parts == guarded_parts:
+            return True
+        # Exactly one component deeper.
+        if (
+            len(pp.parts) == len(guarded_parts) + 1
+            and pp.parts[: len(guarded_parts)] == guarded_parts
+        ):
+            return True
+
+    return False
 
 
 def has_at_least_three_components(path: Path) -> bool:
@@ -193,6 +246,8 @@ def is_strict_descendant(path: Path, root: Path) -> bool:
 
 __all__ = [
     "ALWAYS_DISALLOWED_POSIX",
+    "ALWAYS_DISALLOWED_POSIX_EXACT_PLUS_ONE",
+    "ALWAYS_DISALLOWED_POSIX_SUBTREES",
     "ALWAYS_DISALLOWED_WINDOWS",
     "PATH_LENGTH_WARN_THRESHOLD",
     "has_at_least_three_components",

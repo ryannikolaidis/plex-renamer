@@ -18,6 +18,7 @@ Schema::
       "entries": [
         {
           "op_index": 0,
+          "parent_op_index": null,
           "source": "...",
           "target": "...",
           "status": "pending" | "verified" | "failed" | "reverted",
@@ -28,6 +29,13 @@ Schema::
         }
       ]
     }
+
+Sidecars are stored as separate entries with ``parent_op_index`` set to
+the plan op index of their parent. The sidecar's ``op_index`` is its
+position within the parent's sidecar tuple (0, 1, 2, ...). Primaries
+carry ``parent_op_index = null``. Entries are looked up by the
+(op_index, parent_op_index) tuple so a sidecar never collides with a
+primary op whose index happens to match.
 """
 
 from __future__ import annotations
@@ -58,6 +66,15 @@ class JournalEntry:
     bytes: int | None = None
     sha256: str | None = None
     error: str | None = None
+    parent_op_index: int | None = None
+    """When set, this entry is a sidecar of the primary op at ``parent_op_index``.
+
+    Primaries leave this ``None``. ``op_index`` is the plan-level op index for
+    primaries and the sidecar's position within the parent's sidecar tuple
+    (0, 1, 2, ...) for sidecars. Entries are looked up by the
+    (op_index, parent_op_index) tuple so a sidecar's local position cannot
+    collide with a later primary op's index.
+    """
 
 
 def _new_batch_id() -> str:
@@ -135,12 +152,20 @@ class Journal:
 
     # ----- Mutations ------------------------------------------------------
 
-    def add_pending(self, op_index: int, source: Path, target: Path) -> JournalEntry:
+    def add_pending(
+        self,
+        op_index: int,
+        source: Path,
+        target: Path,
+        *,
+        parent_op_index: int | None = None,
+    ) -> JournalEntry:
         entry = JournalEntry(
             op_index=op_index,
             source=str(source),
             target=str(target),
             status="pending",
+            parent_op_index=parent_op_index,
         )
         self.entries.append(entry)
         self._persist()
@@ -151,23 +176,36 @@ class Journal:
         op_index: int,
         bytes_copied: int,
         sha256: str | None = None,
+        *,
+        parent_op_index: int | None = None,
     ) -> None:
-        e = self._entry(op_index)
+        e = self._entry(op_index, parent_op_index)
         e.status = "verified"
         e.bytes = bytes_copied
         e.sha256 = sha256
         e.timestamp = time.time()
         self._persist()
 
-    def mark_failed(self, op_index: int, error: str) -> None:
-        e = self._entry(op_index)
+    def mark_failed(
+        self,
+        op_index: int,
+        error: str,
+        *,
+        parent_op_index: int | None = None,
+    ) -> None:
+        e = self._entry(op_index, parent_op_index)
         e.status = "failed"
         e.error = error
         e.timestamp = time.time()
         self._persist()
 
-    def mark_reverted(self, op_index: int) -> None:
-        e = self._entry(op_index)
+    def mark_reverted(
+        self,
+        op_index: int,
+        *,
+        parent_op_index: int | None = None,
+    ) -> None:
+        e = self._entry(op_index, parent_op_index)
         e.status = "reverted"
         e.timestamp = time.time()
         self._persist()
@@ -176,11 +214,13 @@ class Journal:
         self.cleanup_ran = ran
         self._persist()
 
-    def _entry(self, op_index: int) -> JournalEntry:
+    def _entry(self, op_index: int, parent_op_index: int | None = None) -> JournalEntry:
         for e in self.entries:
-            if e.op_index == op_index:
+            if e.op_index == op_index and e.parent_op_index == parent_op_index:
                 return e
-        raise KeyError(f"no journal entry for op_index={op_index}")
+        raise KeyError(
+            f"no journal entry for op_index={op_index}, parent_op_index={parent_op_index}"
+        )
 
     # ----- Queries --------------------------------------------------------
 

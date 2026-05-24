@@ -36,7 +36,23 @@ def sha256_of(path: Path) -> str:
 
 
 def verify_hash(source: Path, target: Path) -> bool:
+    """Return True iff source and target hash to the same digest."""
     return sha256_of(source) == sha256_of(target)
 
 
-__all__ = ["sha256_of", "verify_hash", "verify_size"]
+def verify_hash_with_digest(source: Path, target: Path) -> tuple[bool, str]:
+    """Verify with sha256 and return ``(matched, target_digest)``.
+
+    The target is the canonical digest to record in the journal — it is
+    the file the executor just wrote and the one undo will need to verify
+    later. We hash both files exactly once each; this avoids the
+    second pass that ``verify_hash(...)`` + ``sha256_of(target)`` would
+    require when the caller wants both the verification result and the
+    target's digest.
+    """
+    target_digest = sha256_of(target)
+    source_digest = sha256_of(source)
+    return (source_digest == target_digest, target_digest)
+
+
+__all__ = ["sha256_of", "verify_hash", "verify_hash_with_digest", "verify_size"]

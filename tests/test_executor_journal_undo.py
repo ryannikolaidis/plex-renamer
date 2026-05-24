@@ -68,10 +68,15 @@ def test_undo_without_cleanup_restores(tmp_path: Path) -> None:
     assert plan.ops[0].source.exists()
 
 
-def test_undo_with_cleanup_moves_to_review(tmp_path: Path) -> None:
-    """When cleanup ran, undo moves targets to a review folder."""
-    plan = _basic_plan(tmp_path)
-    result = apply_plan(plan, journal_dir=tmp_path / "journals", cleanup=True)
+def test_undo_with_cleanup_moves_to_review(safe_tmp_path: Path) -> None:
+    """When cleanup ran, undo moves targets to a review folder.
+
+    Uses ``safe_tmp_path`` instead of ``tmp_path`` because cleanup refuses
+    paths under ``/private/var/folders/...`` (the macOS realpath form of
+    pytest's tmp dirs).
+    """
+    plan = _basic_plan(safe_tmp_path)
+    result = apply_plan(plan, journal_dir=safe_tmp_path / "journals", cleanup=True)
     assert result.cleanup_ran is True
     # Source is gone after cleanup.
     assert not plan.ops[0].source.exists()
