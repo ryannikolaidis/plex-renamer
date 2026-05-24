@@ -1,0 +1,135 @@
+name: Release
+
+# Triggered on pushed tags matching ``v*``. Builds PyInstaller artifacts
+# for macOS and Windows in parallel and uploads them to a GitHub
+# Release. The CI workflow at ``.github/workflows/ci.yml`` continues to
+# gate every push and pull request; this workflow is independent and
+# only runs on tag pushes.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    env:
+      # Match the local-dev convention from .agents.md.
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Sync dependencies (locked)
+        run: uv sync --locked --all-groups
+
+      - name: Install PyInstaller
+        run: uv pip install "pyinstaller>=6.11"
+
+      # --- macOS build -------------------------------------------------
+
+      - name: PyInstaller build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          uv run pyinstaller packaging/macos/plex-renamer.spec \
+            --distpath dist --workpath build --noconfirm
+
+      - name: Smoke-test CLI (macOS)
+        if: runner.os == 'macOS'
+        env:
+          CI: "true"
+          PLEX_RENAMER_DIST_DIR: dist/plex-renamer-cli
+        run: uv run pytest tests/test_packaging_smoke.py -v
+
+      - name: Build .dmg (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist/dmg-staging
+          cp -R dist/plex-renamer.app dist/dmg-staging/
+          cp -R dist/plex-renamer-cli dist/dmg-staging/
+          hdiutil create \
+            -volname plex-renamer \
+            -srcfolder dist/dmg-staging \
+            -ov -format UDZO \
+            dist/plex-renamer.dmg
+
+      - name: Upload macOS artifacts
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: plex-renamer-macos
+          path: |
+            dist/plex-renamer.dmg
+            dist/plex-renamer.app
+          if-no-files-found: error
+
+      # --- Windows build -----------------------------------------------
+
+      - name: PyInstaller build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          uv run pyinstaller packaging/windows/plex-renamer.spec --distpath dist --workpath build --noconfirm
+
+      - name: Smoke-test CLI (Windows)
+        if: runner.os == 'Windows'
+        env:
+          CI: "true"
+          PLEX_RENAMER_DIST_DIR: dist/plex-renamer-cli
+        run: uv run pytest tests/test_packaging_smoke.py -v
+
+      - name: Install NSIS (Windows)
+        if: runner.os == 'Windows'
+        run: choco install -y nsis --no-progress
+
+      - name: Build installer (Windows)
+        if: runner.os == 'Windows'
+        run: makensis packaging/installer/nsis_script.nsi
+
+      - name: Upload Windows artifacts
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: plex-renamer-windows
+          path: |
+            dist/plex-renamer-setup.exe
+            dist/plex-renamer-cli/plex-renamer.exe
+            dist/plex-renamer-gui/plex-renamer-gui.exe
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          # Glob picks up the .dmg, .app archive, setup.exe, and the bare
+          # CLI .exe from the matrix builds. The .app uploads as a folder
+          # which softprops turns into a tarball; that's the unsigned
+          # ad-hoc-signed bundle users can drop into /Applications.
+          files: |
+            artifacts/plex-renamer-macos/**
+            artifacts/plex-renamer-windows/**

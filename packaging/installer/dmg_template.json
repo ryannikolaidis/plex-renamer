@@ -1,0 +1,20 @@
+{
+  "_comment": "DMG layout config. Consumed by the hdiutil-driven build step in the Makefile and .github/workflows/release.yml. Kept as JSON (rather than a shell script) so a future dmgbuild migration is a drop-in: the same keys map to dmgbuild's settings.py keys.",
+  "title": "plex-renamer",
+  "filename": "plex-renamer.dmg",
+  "format": "UDZO",
+  "size": "200m",
+  "contents": [
+    {
+      "path": "dist/plex-renamer.app",
+      "type": "file",
+      "_comment": "GUI .app bundle produced by PyInstaller's BUNDLE step."
+    },
+    {
+      "path": "dist/plex-renamer-cli",
+      "type": "file",
+      "_comment": "CLI one-folder bundle. Included so power users can drop the CLI binary onto their PATH alongside running the GUI."
+    }
+  ],
+  "_post_install_note": "The .dmg is unsigned and ad-hoc. macOS Gatekeeper will require the user to right-click -> Open the first time. Code signing / notarization is explicitly out of scope for the first release per INVARIANTS.md."
+}
