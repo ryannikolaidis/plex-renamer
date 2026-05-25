@@ -59,6 +59,13 @@ class TargetPanel(QWidget):
         self.refresh()
 
     def _make_group_item(self, group_key: str, rows: list[ItemRow]) -> QTreeWidgetItem:
+        # Mirror source_panel._make_group_item: when the group has no
+        # candidate yet (resolver returned nothing), prefer show_name_hint
+        # for TV rows so the user sees "Lazarus_2 — 13 item(s)" instead
+        # of "[S01.E01] Goodbye Cruel World.mp4". Falling back to
+        # title_candidate lands us on the EPISODE title for filenames
+        # like "[S01.E01] Episode.mp4"; falling back to raw_filename
+        # puts the .mp4 filename in the group header. Neither is the show.
         if not rows:
             label = group_key
         else:
@@ -66,10 +73,14 @@ class TargetPanel(QWidget):
             if first.candidate is not None:
                 title = first.candidate.title
                 year = f" ({first.candidate.year})" if first.candidate.year else ""
+            elif first.parsed.kind == "tv" and first.show_name_hint:
+                title = first.show_name_hint
+                year = f" ({first.parsed.year})" if first.parsed.year else ""
             else:
                 title = first.parsed.title_candidate or first.parsed.raw_filename
                 year = f" ({first.parsed.year})" if first.parsed.year else ""
-            label = f"{title}{year}"
+            count = f" — {len(rows)} item(s)" if len(rows) > 1 else ""
+            label = f"{title}{year}{count}"
         item = QTreeWidgetItem([label])
         item.setData(0, GROUP_KEY_ROLE, group_key)
         return item

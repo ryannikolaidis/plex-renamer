@@ -226,6 +226,28 @@ def test_e2e_lazarus_2_recovery_screenshots(qapp, qtbot, tmp_path, screenshots_d
         f"expected 13 episode leaves under the group, got {group_item.childCount()}"
     )
 
+    # The TARGET panel group label must ALSO show "Lazarus_2", not the
+    # first row's episode filename. Without the show_name_hint fallback
+    # in target_panel._make_group_item, unresolved TV groups collapse to
+    # the first episode's title_candidate (e.g. "Goodbye Cruel World")
+    # or raw_filename (e.g. "[S01.E01] Goodbye Cruel World.mp4") —
+    # that's the v0.1.3 user-visible bug.
+    target_panel = window.target_panel()
+    assert target_panel._tree.topLevelItemCount() == 1, (
+        f"expected 1 target group, got {target_panel._tree.topLevelItemCount()}"
+    )
+    target_group_unresolved = target_panel._tree.topLevelItem(0)
+    target_label_unresolved = target_group_unresolved.text(0)
+    assert "Lazarus_2" in target_label_unresolved, (
+        f"target panel group label leaked first episode: {target_label_unresolved!r}"
+    )
+    assert "Goodbye Cruel World" not in target_label_unresolved, (
+        f"target panel group label leaked episode title: {target_label_unresolved!r}"
+    )
+    assert "[S01.E01]" not in target_label_unresolved, (
+        f"target panel group label leaked filename: {target_label_unresolved!r}"
+    )
+
     # ----- Step 3: click a row to open the edit pane -----
     rows = window.item_model().rows()
     first_path = rows[0].source_path

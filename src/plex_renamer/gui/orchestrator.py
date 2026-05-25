@@ -38,6 +38,7 @@ from plex_renamer.gui.show_anchor_picker import ShowAnchorPicker
 from plex_renamer.parser.extract import parse_tree
 from plex_renamer.parser.models import ParseResult
 from plex_renamer.planner.build import build_plan_from_pairs
+from plex_renamer.planner.models import RenamePlan
 from plex_renamer.tmdb.fallback import IMDbFallbackResolver
 from plex_renamer.tmdb.models import Candidate, Episode, MovieResult, TVResult
 from plex_renamer.tmdb.ranking import cleaned_query_variants, rank_candidates
@@ -738,7 +739,7 @@ class Orchestrator(QObject):
 
     def _build_plan_from_model(
         self, item_model: ItemModel, input_root: Path
-    ) -> tuple[object, list[tuple[Path, str]]]:
+    ) -> tuple[RenamePlan, list[tuple[Path, str]]]:
         """Build a RenamePlan from the model's current state.
 
         Returns the plan plus the skipped list (user-skipped rows). Rows
@@ -763,7 +764,7 @@ class Orchestrator(QObject):
         )
         return plan, skipped
 
-    def preview(self, item_model: ItemModel, input_root: Path) -> object:
+    def preview(self, item_model: ItemModel, input_root: Path) -> RenamePlan:
         """Build a plan without applying it.
 
         Populates the model's proposed ops (so the target panel renders
