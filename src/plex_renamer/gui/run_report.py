@@ -81,6 +81,24 @@ class RunReportWidget(QWidget):
             self._errors_list.addItem(msg)
         self._undo_btn.setEnabled(report.journal_path is not None)
 
+    def set_resolve_errors(self, errors: list[tuple[Path, str]]) -> None:
+        """Replace the Errors list with per-row resolver failures.
+
+        Called from the main window when the orchestrator's
+        ``resolve_errors_changed`` signal fires. We render each entry
+        as ``<filename>: <message>`` so the user sees which file failed
+        to resolve and why; the full path is available on hover via the
+        widget's tooltip.
+
+        This is intentionally a SET (not an append): each resolve pass
+        is the authoritative list. An empty argument clears prior
+        errors so a successful re-resolve doesn't leave stale entries
+        showing.
+        """
+        self._errors_list.clear()
+        for path, message in errors:
+            self._errors_list.addItem(f"{path.name}: {message}")
+
     def report(self) -> RunReport:
         return self._report
 

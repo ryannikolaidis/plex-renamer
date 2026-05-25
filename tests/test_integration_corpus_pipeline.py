@@ -1,0 +1,471 @@
+"""End-to-end integration test: corpus generator -> orchestrator -> plan.
+
+This is the load-bearing test for the parse -> resolve -> plan pipeline.
+It drives the slice-2 corpus generator's output (every observed input
+pattern + plausible permutations) through the full pipeline with a
+HERMETIC mock TMDB (no real network). It catches whole classes of bug
+that per-layer unit tests miss:
+
+- Show name derivation from the path tree when the filename leaves
+  ``title_candidate`` empty (bracketed ``[S01.E01]`` shape).
+- Group label correctness in the source panel (show name, not episode
+  filename, not season folder).
+- Show-anchor picker query content (show name, not episode title).
+- End-to-end Plex path correctness against the canonical shape.
+
+Per-layer parser / planner / GUI tests verify individual components;
+this test verifies they COMPOSE correctly. Both layers are mandatory
+per ``INVARIANTS.md`` "Testing discipline".
+
+Runs under ``QT_QPA_PLATFORM=offscreen``.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+pytest.importorskip("PySide6")
+
+
+# --- Hermetic mock TMDB ---------------------------------------------------
+
+
+class FakeTMDB:
+    """In-memory TMDB stub returning deterministic results for known shows.
+
+    Implements the orchestrator's ``_TMDBLike`` protocol: ``search_movie``,
+    ``search_tv``, ``find_by_imdb_id``, ``get_season``. Returns realistic
+    candidates for a small set of shows and movies the corpus generator
+    emits; everything else returns an empty list so the pipeline's
+    "needs review" path is exercised.
+    """
+
+    # Known TV shows: keyed by what derive_show_name returns from the
+    # corpus tree (i.e. the directory name as authored in patterns.py,
+    # case-preserved).
+    _TV_SHOWS: dict[str, tuple[int, str, int | None]] = {
+        "Game Of Thrones": (1399, "Game of Thrones", 2011),
+        "Mad Men": (1104, "Mad Men", 2007),
+        "Warehouse 13": (18347, "Warehouse 13", 2009),
+        "House Of The Dragon": (94997, "House of the Dragon", 2022),
+        # Doctor Who appears in the corpus as a Specials-folder show.
+        "Doctor Who": (57243, "Doctor Who", 2005),
+    }
+
+    # Known movies: keyed by what the parser puts in title_candidate
+    # for the corpus filenames.
+    _MOVIES: dict[str, tuple[int, str, int | None]] = {
+        "A Field In England": (174349, "A Field in England", 2013),
+        "Spaceballs": (11968, "Spaceballs", 1987),
+        "The Matrix": (603, "The Matrix", 1999),
+        "Inception": (27205, "Inception", 2010),
+        "The Godfather": (238, "The Godfather", 1972),
+    }
+
+    # Realistic 10-episode list for GoT season 1.
+    _GOT_SEASON_1: tuple[tuple[int, int, str], ...] = (
+        (1, 1, "Winter Is Coming"),
+        (1, 2, "The Kingsroad"),
+        (1, 3, "Lord Snow"),
+        (1, 4, "Cripples, Bastards, and Broken Things"),
+        (1, 5, "The Wolf and the Lion"),
+        (1, 6, "A Golden Crown"),
+        (1, 7, "You Win or You Die"),
+        (1, 8, "The Pointy End"),
+        (1, 9, "Baelor"),
+        (1, 10, "Fire and Blood"),
+    )
+
+    def __init__(self) -> None:
+        # Record every call so tests can introspect what the orchestrator
+        # asked for; lets us verify the show-anchor picker sent the
+        # SHOW name to TMDB rather than the episode title.
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    def search_movie(self, title: str, year: int | None):
+        from plex_renamer.tmdb.models import MovieResult
+
+        self.calls.append(("search_movie", (title, year)))
+        hit = self._MOVIES.get(title)
+        if hit is None:
+            return []
+        tmdb_id, canon_title, canon_year = hit
+        return [MovieResult(tmdb_id=tmdb_id, title=canon_title, year=canon_year)]
+
+    def search_tv(self, title: str, year: int | None):
+        from plex_renamer.tmdb.models import TVResult
+
+        self.calls.append(("search_tv", (title, year)))
+        hit = self._TV_SHOWS.get(title)
+        if hit is None:
+            return []
+        tmdb_id, canon_title, canon_year = hit
+        return [TVResult(tmdb_id=tmdb_id, title=canon_title, year=canon_year)]
+
+    def find_by_imdb_id(self, imdb_id: str):
+        self.calls.append(("find_by_imdb_id", (imdb_id,)))
+        return None
+
+    def get_season(self, tmdb_id: int, season: int):
+        from plex_renamer.tmdb.models import Episode
+
+        self.calls.append(("get_season", (tmdb_id, season)))
+        if tmdb_id == 1399 and season == 1:
+            return [Episode(season=s, episode=e, title=t) for (s, e, t) in self._GOT_SEASON_1]
+        # Realistic-shape minimal episode list for any other known show:
+        # one episode per season. This is enough for the planner to
+        # synthesize a valid path; the matcher accepts synthetic
+        # episodes when the show list is sparse.
+        return [Episode(season=season, episode=1, title=f"Episode {season:02d}x01")]
+
+
+# --- Fixtures -------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_tmdb() -> FakeTMDB:
+    return FakeTMDB()
+
+
+def make_test_settings(tmp_path: Path):
+    """Construct an isolated :class:`Settings` whose config file lands in
+    ``tmp_path``. The .env path points at a guaranteed-nonexistent file
+    so first-run hydration finds nothing.
+    """
+    from plex_renamer.config.settings import Settings
+
+    cfg = tmp_path / "config.json"
+    fake_env = tmp_path / "nonexistent.env"
+    return Settings.load(config_path=cfg, dotenv_path=fake_env)
+
+
+def make_orchestrator(settings, *, tmdb: FakeTMDB, tmp_path: Path):
+    """Construct an :class:`Orchestrator` + :class:`ItemModel` with the
+    mock TMDB injected via :class:`OrchestratorDeps`. The resolver wraps
+    the mock; no real network calls happen.
+    """
+    from plex_renamer.gui.models import ItemModel
+    from plex_renamer.gui.orchestrator import Orchestrator, OrchestratorDeps
+    from plex_renamer.tmdb.fallback import IMDbFallbackResolver
+
+    resolver = IMDbFallbackResolver(tmdb, omdb_api_key=None)
+    deps = OrchestratorDeps(
+        tmdb=tmdb,
+        resolver=resolver,
+        movies_root=tmp_path / "Movies",
+        tv_root=tmp_path / "TV",
+        journal_dir=tmp_path / "journals",
+        cleanup_enabled=False,
+    )
+    model = ItemModel()
+    return Orchestrator(model, deps), model
+
+
+def make_window_with_orchestrator(settings, *, tmdb: FakeTMDB, tmp_path: Path):
+    """Construct the full production wiring: MainWindow + Orchestrator +
+    parse/apply/preview wrappers, just like ``plex_renamer.gui.app.build_window``.
+    Tests that need to inspect the source panel's group label or drive
+    a real group click through the UI use this.
+    """
+    from plex_renamer.gui.app import build_window
+    from plex_renamer.gui.orchestrator import OrchestratorDeps
+    from plex_renamer.tmdb.fallback import IMDbFallbackResolver
+
+    resolver = IMDbFallbackResolver(tmdb, omdb_api_key=None)
+    deps = OrchestratorDeps(
+        tmdb=tmdb,
+        resolver=resolver,
+        movies_root=tmp_path / "Movies",
+        tv_root=tmp_path / "TV",
+        journal_dir=tmp_path / "journals",
+        cleanup_enabled=False,
+    )
+    window = build_window(settings, deps)
+    return window
+
+
+# --- Tests ----------------------------------------------------------------
+
+
+def test_lazarus_pattern_resolves_to_show_name(tmp_path, qapp, mock_tmdb) -> None:
+    """The exact bug the user hit: episode files under Show/s1/ resolve correctly.
+
+    Filenames shaped like ``[S01.E01] Episode Title.mp4`` leave the
+    parser's ``title_candidate`` empty (episode title belongs in
+    ``episode_title``). Before the fix, the orchestrator searched TMDB
+    with the EPISODE title (or with the season folder name "s1"); both
+    produce empty or wrong hits. After the fix, the show name is
+    derived from the path tree at parse time and used as the TMDB
+    query.
+    """
+    # Use "Game Of Thrones" (a corpus-generator show) since FakeTMDB
+    # knows it; build a Lazarus-shape subtree under MAX/.
+    root = tmp_path / "MAX"
+    root.mkdir()
+    show_dir = root / "Game Of Thrones" / "s1"
+    show_dir.mkdir(parents=True)
+    titles = [
+        "Winter Is Coming",
+        "The Kingsroad",
+        "Lord Snow",
+        "Cripples, Bastards, and Broken Things",
+    ]
+    for i, title in enumerate(titles, start=1):
+        (show_dir / f"[S01.E{i:02d}] {title}.mp4").touch()
+
+    settings = make_test_settings(tmp_path)
+    orchestrator, model = make_orchestrator(settings, tmdb=mock_tmdb, tmp_path=tmp_path)
+    rows = orchestrator.parse_and_resolve(root)
+
+    assert len(rows) == 4
+
+    # Every row carries a Candidate (not None) AND it's the TMDB show.
+    for r in rows:
+        assert r.candidate is not None, f"Row {r.parsed.raw_filename} stayed unresolved"
+        assert r.candidate.anchor_kind == "tmdb"
+        assert r.candidate.title == "Game of Thrones"
+
+    # Every row's show_name_hint is the show name from the path tree.
+    for r in rows:
+        assert r.show_name_hint == "Game Of Thrones"
+
+    # All 4 rows share the same group_key (anchored on the SHOW name).
+    keys = {r.group_key for r in rows}
+    assert len(keys) == 1
+    assert keys.pop() == "tv::Game Of Thrones"
+
+
+def test_lazarus_pattern_when_drop_is_show_root(tmp_path, qapp, mock_tmdb) -> None:
+    """When the user drops the SHOW directory directly (no parent), the
+    show name comes from input_root.name. derive_show_name's fallback
+    handles the case where every parent_dirs entry is season-like.
+    """
+    root = tmp_path / "Lazarus-Like"
+    show_dir = root / "s1"
+    show_dir.mkdir(parents=True)
+    (show_dir / "[S01.E01] Winter Is Coming.mp4").touch()
+    (show_dir / "[S01.E02] The Kingsroad.mp4").touch()
+
+    settings = make_test_settings(tmp_path)
+    orchestrator, _model = make_orchestrator(settings, tmdb=mock_tmdb, tmp_path=tmp_path)
+    rows = orchestrator.parse_and_resolve(root)
+
+    assert len(rows) == 2
+    # show_name_hint falls back to input_root.name when parent_dirs is
+    # ``["s1"]`` (every entry matches the season-folder regex).
+    for r in rows:
+        assert r.show_name_hint == "Lazarus-Like"
+
+
+def test_group_label_uses_show_name(tmp_path, qapp, mock_tmdb) -> None:
+    """The source-panel group label is the show name, not the first
+    episode's filename or the season folder name.
+    """
+    root = tmp_path / "MAX"
+    show_dir = root / "Game Of Thrones" / "s1"
+    show_dir.mkdir(parents=True)
+    (show_dir / "[S01.E01] Winter Is Coming.mp4").touch()
+    (show_dir / "[S01.E02] The Kingsroad.mp4").touch()
+
+    settings = make_test_settings(tmp_path)
+    window = make_window_with_orchestrator(settings, tmdb=mock_tmdb, tmp_path=tmp_path)
+
+    # Drive the drop through the same path the production drop zone uses.
+    window._on_paths_dropped([root])
+
+    panel = window.source_panel()
+    panel.refresh()  # idempotent; ensures the tree reflects the model
+    assert panel._tree.topLevelItemCount() == 1
+    group_item = panel._tree.topLevelItem(0)
+    label = group_item.text(0)
+
+    # The label includes the show name (canonical or path-derived). It
+    # MUST NOT contain the episode title or the .mp4 extension.
+    assert "Game of Thrones" in label or "Game Of Thrones" in label, label
+    assert "Winter Is Coming" not in label, label
+    assert ".mp4" not in label, label
+    assert "[S01" not in label, label
+
+
+def test_movie_in_flat_dir_resolves(tmp_path, qapp, mock_tmdb) -> None:
+    """Tubitv-shape flat movie files resolve cleanly through the pipeline."""
+    root = tmp_path / "Tubitv"
+    root.mkdir()
+    (root / "A Field In England.mp4").touch()
+    (root / "Spaceballs.mp4").touch()
+
+    settings = make_test_settings(tmp_path)
+    orchestrator, _model = make_orchestrator(settings, tmdb=mock_tmdb, tmp_path=tmp_path)
+    rows = orchestrator.parse_and_resolve(root)
+
+    titles = {r.candidate.title for r in rows if r.candidate is not None}
+    assert "A Field in England" in titles, titles
+    assert "Spaceballs" in titles, titles
+
+
+def test_full_corpus_pipeline_no_tv_left_unresolved_when_show_in_tmdb(
+    tmp_path, qapp, mock_tmdb
+) -> None:
+    """Run the slice-2 corpus generator and walk every TV item through the pipeline.
+
+    For every show the FakeTMDB knows about, every episode of that
+    show in the corpus must resolve to a Candidate with
+    ``anchor_kind="tmdb"``. Shows the FakeTMDB doesn't know about may
+    stay unresolved — those are the "needs review" path.
+    """
+    from plex_renamer.test_corpus import build_corpus
+
+    corpus_root = tmp_path / "corpus"
+    build_corpus(corpus_root)
+
+    settings = make_test_settings(tmp_path)
+    orchestrator, _model = make_orchestrator(settings, tmdb=mock_tmdb, tmp_path=tmp_path)
+    rows = orchestrator.parse_and_resolve(corpus_root)
+
+    # FakeTMDB knows these shows; every episode under one of them must
+    # carry a Candidate.
+    known_shows = {
+        "Game Of Thrones",
+        "Mad Men",
+        "Warehouse 13",
+        "House Of The Dragon",
+        "Doctor Who",
+    }
+    relevant = [r for r in rows if r.parsed.kind == "tv" and r.show_name_hint in known_shows]
+    assert len(relevant) > 0, "Corpus should produce TV rows for the known shows"
+    for r in relevant:
+        assert r.candidate is not None, (
+            f"Row for known show {r.show_name_hint!r} stayed unresolved: {r.parsed.raw_filename}"
+        )
+        assert r.candidate.anchor_kind == "tmdb"
+
+
+def test_proposed_plex_paths_match_canonical_shape(tmp_path, qapp, mock_tmdb) -> None:
+    """End-to-end: parse + resolve + plan yields canonical Plex paths."""
+    root = tmp_path / "MAX"
+    show_dir = root / "Game Of Thrones" / "s1"
+    show_dir.mkdir(parents=True)
+    (show_dir / "[S01.E01] Winter Is Coming.mp4").touch()
+
+    settings = make_test_settings(tmp_path)
+    orchestrator, model = make_orchestrator(settings, tmdb=mock_tmdb, tmp_path=tmp_path)
+    orchestrator.parse_and_resolve(root)
+
+    plan = orchestrator.preview(model, input_root=root)
+    assert len(plan.ops) == 1, [op.target for op in plan.ops]
+    op = plan.ops[0]
+    expected = (
+        tmp_path
+        / "TV"
+        / "Game of Thrones (2011) {tmdb-1399}"
+        / "Season 01"
+        / "Game of Thrones (2011) - S01E01 - Winter Is Coming.mp4"
+    )
+    assert op.target == expected, f"Got: {op.target}"
+
+
+def test_show_anchor_picker_uses_orchestrator_factory(tmp_path, qapp, mock_tmdb) -> None:
+    """The orchestrator's picker_factory receives the group key on click,
+    and the candidates seeded into it come from a SHOW-name TMDB search.
+
+    This pins the integration between ``on_group_clicked`` and the
+    picker so future refactors can't silently route the picker through
+    a different code path.
+    """
+    from plex_renamer.gui.models import ItemModel
+    from plex_renamer.gui.orchestrator import Orchestrator, OrchestratorDeps
+    from plex_renamer.tmdb.fallback import IMDbFallbackResolver
+
+    root = tmp_path / "MAX"
+    show_dir = root / "Game Of Thrones" / "s1"
+    show_dir.mkdir(parents=True)
+    (show_dir / "[S01.E01] Winter Is Coming.mp4").touch()
+
+    # Build a stub picker we control directly.
+    captured: dict = {"group_key": None, "candidates": None, "execed": False}
+
+    class _StubPicker:
+        def __init__(self, group_key):
+            captured["group_key"] = group_key
+
+        @property
+        def show_chosen(self):
+            class _Sig:
+                def connect(self, _fn):
+                    pass
+
+            return _Sig()
+
+        def set_results(self, c):
+            captured["candidates"] = list(c)
+
+        def exec(self):
+            captured["execed"] = True
+            return 0
+
+    resolver = IMDbFallbackResolver(mock_tmdb, omdb_api_key=None)
+    deps = OrchestratorDeps(
+        tmdb=mock_tmdb,
+        resolver=resolver,
+        movies_root=tmp_path / "Movies",
+        tv_root=tmp_path / "TV",
+        journal_dir=tmp_path / "journals",
+        cleanup_enabled=False,
+        picker_factory=_StubPicker,
+    )
+    model = ItemModel()
+    orch = Orchestrator(model, deps)
+
+    # Drive the parse + resolve manually so we control the rows.
+    rows = orch.parse_and_resolve(root)
+    assert rows, "expected parsed rows"
+
+    # Reset call recording so we observe ONLY the on_group_clicked
+    # search.
+    pre_count = len(mock_tmdb.calls)
+    orch.on_group_clicked("tv::Game Of Thrones")
+
+    assert captured["group_key"] == "tv::Game Of Thrones"
+    assert captured["execed"] is True
+    # The picker received TMDB candidates (FakeTMDB has Game of Thrones).
+    assert captured["candidates"] is not None
+    assert len(captured["candidates"]) >= 1
+
+    # The TMDB search fired with the SHOW name as the query.
+    new_search_calls = [c for c in mock_tmdb.calls[pre_count:] if c[0] == "search_tv"]
+    assert new_search_calls, "on_group_clicked should have issued a search_tv"
+    queried_title = new_search_calls[0][1][0]
+    assert queried_title == "Game Of Thrones"
+
+    # And it MUST NOT have queried with the episode title.
+    queried_titles = [c[1][0] for c in mock_tmdb.calls[pre_count:] if c[0] == "search_tv"]
+    assert "Winter Is Coming" not in queried_titles
+    assert "" not in queried_titles
+
+
+def test_full_corpus_resolves_under_a_drop(tmp_path, qapp, mock_tmdb) -> None:
+    """Sanity: the full corpus tree parses without exceptions and
+    produces ItemRows for every non-skip, non-unknown entry. Catches
+    regressions where the orchestrator chokes on a real-shaped tree.
+    """
+    from plex_renamer.test_corpus import build_corpus
+
+    corpus_root = tmp_path / "corpus"
+    build_corpus(corpus_root)
+
+    settings = make_test_settings(tmp_path)
+    orchestrator, _model = make_orchestrator(settings, tmdb=mock_tmdb, tmp_path=tmp_path)
+    rows = orchestrator.parse_and_resolve(corpus_root)
+
+    # At least one row of each kind survives the filter.
+    kinds = {r.parsed.kind for r in rows}
+    assert "tv" in kinds, "Corpus should produce TV rows"
+    assert "movie" in kinds, "Corpus should produce movie rows"
+
+    # No row was emitted with kind=unknown or skip_reason set.
+    for r in rows:
+        assert r.parsed.kind != "unknown"
+        assert r.parsed.skip_reason is None

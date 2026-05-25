@@ -72,13 +72,20 @@ class SourcePanel(QWidget):
         self.refresh()
 
     def _make_group_item(self, group_key: str, rows: list[ItemRow]) -> QTreeWidgetItem:
-        # Group label: derive from the first row's metadata; the parser
-        # cleaned the title already.
+        # Group label: for TV rows we prefer the show_name_hint (the
+        # show name derived from the path tree at parse time). Falling
+        # back to ``title_candidate`` would land us on the EPISODE
+        # title for filenames shaped like ``[S01.E01] Episode.mp4``;
+        # falling back to ``raw_filename`` would put the .mp4 filename
+        # in the group label. Neither is the show.
         if not rows:
             label = group_key
         else:
             first = rows[0]
-            title = first.parsed.title_candidate or first.parsed.raw_filename
+            if first.parsed.kind == "tv" and first.show_name_hint:
+                title = first.show_name_hint
+            else:
+                title = first.parsed.title_candidate or first.parsed.raw_filename
             year = f" ({first.parsed.year})" if first.parsed.year else ""
             count = f" — {len(rows)} item(s)" if len(rows) > 1 else ""
             label = f"{title}{year}{count}"

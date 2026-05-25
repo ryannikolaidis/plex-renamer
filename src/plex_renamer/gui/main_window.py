@@ -108,6 +108,11 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("plex-renamer")
         self.setMinimumSize(1100, 700)
+        # Default window geometry. The minimum keeps the layout
+        # functional on small screens; the resize gives the right pane
+        # enough room not to clip the run-report's Errors list and the
+        # collision review widget on a fresh launch.
+        self.resize(1800, 1000)
         self._settings = settings
         self._parse_fn: ParseFn = parse_fn or _default_parse
         self._apply_fn: ApplyFn | None = apply_fn
@@ -165,7 +170,7 @@ class MainWindow(QMainWindow):
         panels = QSplitter()
         panels.addWidget(self._source_panel)
         panels.addWidget(self._target_panel)
-        panels.setSizes([550, 550])
+        panels.setSizes([700, 700])
 
         # Right side: edit pane stacked above collision review and run
         # report. We use a splitter so the user can resize.
@@ -179,7 +184,7 @@ class MainWindow(QMainWindow):
         body = QSplitter()
         body.addWidget(panels)
         body.addWidget(side)
-        body.setSizes([800, 400])
+        body.setSizes([1100, 600])
 
         # Bottom bar: settings on the left, Preview + Apply on the right.
         bottom = QHBoxLayout()

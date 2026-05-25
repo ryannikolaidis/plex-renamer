@@ -22,10 +22,13 @@ just implements the same five method names.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+
+from PySide6.QtCore import QObject, Signal
 
 from plex_renamer.executor.copy import apply_plan
 from plex_renamer.executor.journal import Journal
@@ -37,6 +40,32 @@ from plex_renamer.parser.models import ParseResult
 from plex_renamer.planner.build import build_plan_from_pairs
 from plex_renamer.tmdb.fallback import IMDbFallbackResolver
 from plex_renamer.tmdb.models import Candidate, Episode, MovieResult, TVResult
+
+# Matches a directory name that looks like a season folder, not a show
+# name. ``s1``, ``S01``, ``Season 5``, ``Series 2``, ``Specials`` are all
+# season folders — when we're walking a parent_dirs chain looking for
+# the SHOW name, we skip these.
+_SEASON_FOLDER_RE = re.compile(
+    r"^(s|season\s*|series\s*)\d{1,2}$|^specials$",
+    re.IGNORECASE,
+)
+
+
+def derive_show_name(input_root: Path, parent_dirs: list[str]) -> str:
+    """Find the most likely TV show name from the path tree.
+
+    Walks ``parent_dirs`` left-to-right (closest to ``input_root`` first),
+    returning the first entry that does NOT look like a season folder
+    (``s1``, ``S01``, ``Season 1``, ``Series 1``, ``Specials``). Falls
+    back to ``input_root.name`` when every ``parent_dirs`` entry is
+    season-like — that case covers the user dropping ``MAX/Lazarus/``
+    directly, where ``parent_dirs`` is just ``["s1"]`` and the show name
+    lives on the drop root itself.
+    """
+    for d in parent_dirs:
+        if not _SEASON_FOLDER_RE.match(d.strip()):
+            return d
+    return input_root.name
 
 
 class _TMDBLike(Protocol):
@@ -81,7 +110,7 @@ class OrchestratorDeps:
     picker_factory: ShowAnchorPickerFactory = _default_picker_factory
 
 
-class Orchestrator:
+class Orchestrator(QObject):
     """Engine binder for :class:`MainWindow`.
 
     Construct with the GUI :class:`ItemModel`, the dependency bundle,
@@ -91,6 +120,12 @@ class Orchestrator:
     handler methods directly (tests do this to avoid event-loop spin).
     """
 
+    # Emitted whenever the resolve pass produces per-row failures. The
+    # main window subscribes and forwards to the run-report widget so
+    # silent resolver exceptions become visible to the user instead of
+    # being swallowed.
+    resolve_errors_changed = Signal(list)  # list[tuple[Path, str]]
+
     def __init__(
         self,
         item_model: ItemModel,
@@ -98,12 +133,18 @@ class Orchestrator:
         *,
         main_window: object | None = None,
     ) -> None:
+        super().__init__()
         self._model = item_model
         self._deps = deps
         self._main_window = main_window
         # The currently-open picker, if any. We hold a reference so the
         # picker isn't garbage-collected while the user interacts.
         self._open_picker: ShowAnchorPicker | None = None
+        # Per-row resolver errors from the most recent resolve pass.
+        # Emitted on ``resolve_errors_changed`` so the run-report
+        # surfaces them; absent that subscription, tests can read this
+        # directly.
+        self._last_resolve_errors: list[tuple[Path, str]] = []
 
     # ----- Wiring ---------------------------------------------------------
 
@@ -115,6 +156,12 @@ class Orchestrator:
         is what keeps production's ``_parse_fn`` shape aligned with the
         tests: ``_parse_fn`` returns a ``ParseResult`` list and the
         orchestrator runs resolution on the seated rows out-of-band.
+
+        The orchestrator's own ``resolve_errors_changed`` signal is
+        wired into the main window's run-report widget so per-row
+        resolver failures (TMDB exceptions, missing API keys mid-batch)
+        surface in the Errors pane instead of disappearing into a
+        swallowed except clause.
         """
         self._main_window = main_window
         main_window.tmdb_search_requested.connect(self.on_tmdb_search)  # type: ignore[attr-defined]
@@ -123,6 +170,8 @@ class Orchestrator:
         main_window.reanchor_requested.connect(self.on_reanchor_requested)  # type: ignore[attr-defined]
         main_window.undone.connect(self.on_undo_requested)  # type: ignore[attr-defined]
         main_window.parsed_inputs.connect(self._on_parsed_inputs)  # type: ignore[attr-defined]
+        run_report = main_window.run_report_widget()  # type: ignore[attr-defined]
+        self.resolve_errors_changed.connect(run_report.set_resolve_errors)
 
     # ----- Parse + resolve ------------------------------------------------
 
@@ -144,33 +193,77 @@ class Orchestrator:
     def resolve_rows(self, rows: list[ItemRow]) -> None:
         """Resolve every row's candidate via the IMDb-fallback resolver.
 
-        For TV rows, after a candidate lands we additionally fetch the
-        season's episode list so the planner can match episodes by title
-        downstream. Failures don't abort the loop; an unresolved row
-        stays without a candidate and lands as "unresolved" in the UI.
+        TV rows resolve PER GROUP: a 13-episode show is one TMDB search
+        and one season hydration per unique season, not 13 of each. The
+        group key is each row's :attr:`ItemRow.show_name_hint` —
+        episodes shaped like ``[S01.E01] Title.mp4`` leave the show name
+        on a parent directory, not in ``title_candidate``, and the hint
+        is what derive_show_name extracted at parse time.
+
+        Movie rows resolve per-row as before.
+
+        Failures don't abort the loop; an unresolved row stays without
+        a candidate and lands as "unresolved" in the UI. Each failure
+        is captured in ``_last_resolve_errors`` and emitted via
+        ``resolve_errors_changed`` so the run-report surfaces them
+        instead of letting them disappear into a swallowed except clause.
         """
-        for row in rows:
+        errors: list[tuple[Path, str]] = []
+
+        movie_rows = [r for r in rows if r.parsed.kind == "movie"]
+        tv_rows = [r for r in rows if r.parsed.kind == "tv"]
+
+        # ----- Movies: per-row -------------------------------------------
+        for row in movie_rows:
             parsed = row.parsed
             try:
-                if parsed.kind == "movie":
-                    candidate = self._deps.resolver.resolve_movie(
-                        parsed.title_candidate or "", parsed.year
-                    )
-                elif parsed.kind == "tv":
-                    candidate = self._deps.resolver.resolve_tv(
-                        parsed.title_candidate or "", parsed.year
-                    )
-                else:
-                    continue
-            except Exception:
+                candidate = self._deps.resolver.resolve_movie(
+                    parsed.title_candidate or "", parsed.year
+                )
+            except Exception as exc:
+                errors.append((row.source_path, f"resolve_movie failed: {exc}"))
                 continue
             if candidate is None:
                 continue
-            # For TV, hydrate the season's episode list when possible so
-            # the planner can title-match episodes downstream.
-            if parsed.kind == "tv" and candidate.anchor_kind == "tmdb":
-                candidate = self._hydrate_tv_season(candidate, parsed.season)
             self._model.set_candidate(row.source_path, candidate)
+
+        # ----- TV: grouped by show name hint -----------------------------
+        tv_groups: dict[str, list[ItemRow]] = {}
+        for row in tv_rows:
+            key = row.show_name_hint or row.parsed.title_candidate or row.parsed.raw_filename
+            tv_groups.setdefault(key, []).append(row)
+
+        for show_name, group_rows in tv_groups.items():
+            first = group_rows[0]
+            try:
+                candidate = self._deps.resolver.resolve_tv(show_name, first.parsed.year)
+            except Exception as exc:
+                for r in group_rows:
+                    errors.append((r.source_path, f"resolve_tv failed: {exc}"))
+                continue
+            if candidate is None:
+                continue
+            # Hydrate ONCE per unique season in the group when the
+            # candidate is TMDB-anchored. Each hydrated candidate is
+            # cached by season so we don't refetch for repeat seasons.
+            hydrated_by_season: dict[int | None, Candidate] = {}
+            for r in group_rows:
+                season_key = r.parsed.season
+                if candidate.anchor_kind == "tmdb":
+                    if season_key not in hydrated_by_season:
+                        hydrated_by_season[season_key] = self._hydrate_tv_season(
+                            candidate, season_key
+                        )
+                    row_candidate = hydrated_by_season[season_key]
+                else:
+                    row_candidate = candidate
+                self._model.set_candidate(r.source_path, row_candidate)
+
+        # Stash + surface errors. Always emit, even when empty, so a
+        # successful resolve pass clears any prior error state on the
+        # UI.
+        self._last_resolve_errors = errors
+        self.resolve_errors_changed.emit(list(errors))
 
     def parse_and_resolve(self, input_root: Path) -> list[ItemRow]:
         """Convenience: parse + filter + resolve in one call.
@@ -179,11 +272,21 @@ class Orchestrator:
         skips dropped). The orchestrator pushes them into the model and
         runs resolution. The MainWindow can subscribe to ``rows_reset``
         if it wants to react to the population.
+
+        Each TV row gets a ``show_name_hint`` derived from the path tree
+        via :func:`derive_show_name`. Episode files shaped like
+        ``[S01.E01] Title.mp4`` leave ``title_candidate`` empty (the
+        episode title belongs in ``episode_title``); the hint is the
+        show name pulled from the closest non-season-folder ancestor or
+        from ``input_root`` itself.
         """
         parsed_list = self.parse(input_root)
-        rows = [
-            ItemRow(parsed=p) for p in parsed_list if p.kind != "unknown" and p.skip_reason is None
-        ]
+        rows: list[ItemRow] = []
+        for p in parsed_list:
+            if p.kind == "unknown" or p.skip_reason is not None:
+                continue
+            show_hint = derive_show_name(input_root, p.parent_dirs) if p.kind == "tv" else None
+            rows.append(ItemRow(parsed=p, show_name_hint=show_hint))
         self._model.set_rows(rows)
         self.resolve_rows(rows)
         return rows
@@ -309,18 +412,29 @@ class Orchestrator:
         """Open the show-anchor picker for the group, populate TMDB results.
 
         The picker is created via the dep-injected factory so tests can
-        substitute a fake. We pre-seed search results based on the
-        group's representative title (the first row's title_candidate).
+        substitute a fake. We pre-seed search results using the group's
+        SHOW name (from ``ItemRow.show_name_hint``) — NOT the first
+        row's ``title_candidate`` which for episode-shaped filenames
+        like ``[S01.E01] Goodbye Cruel World.mp4`` is empty (the
+        episode title sits in ``episode_title``). Searching TMDB with
+        the episode title produces zero or wrong hits; searching with
+        the show name is what the user expects.
         """
         rows = self._rows_in_group(group_key)
         if not rows:
             return
-        title_hint = rows[0].parsed.title_candidate or ""
-        year_hint = rows[0].parsed.year
+        first = rows[0]
+        title_hint = first.show_name_hint or first.parsed.title_candidate or ""
+        year_hint = first.parsed.year
+        errors: list[tuple[Path, str]] = []
         try:
             shows = self._deps.tmdb.search_tv(title_hint, year_hint)
-        except Exception:
+        except Exception as exc:
             shows = []
+            for r in rows:
+                errors.append((r.source_path, f"search_tv failed: {exc}"))
+            self._last_resolve_errors = errors
+            self.resolve_errors_changed.emit(list(errors))
         candidates = [
             Candidate(
                 anchor_kind="tmdb",
@@ -389,12 +503,22 @@ class Orchestrator:
 
         ``MainWindow._on_paths_dropped`` builds ``ItemRow`` instances
         from the ``ParseResult`` list returned by ``_parse_fn`` and
-        emits ``parsed_inputs``. This slot resolves every row's
+        emits ``parsed_inputs``. This slot back-fills each TV row's
+        ``show_name_hint`` from the path tree (the drop handler doesn't
+        know about derive_show_name) and then resolves every row's
         candidate via the IMDb-fallback resolver so the badges + target
         column populate without the drop handler having to know about
         the resolver at all.
         """
         rows = self._model.rows()
+        input_root: Path | None = None
+        if self._main_window is not None:
+            input_root = self._main_window.input_root()  # type: ignore[attr-defined]
+        for row in rows:
+            if row.parsed.kind != "tv" or row.show_name_hint is not None:
+                continue
+            root = input_root if input_root is not None else row.parsed.source_path.parent
+            row.show_name_hint = derive_show_name(root, row.parsed.parent_dirs)
         self.resolve_rows(rows)
 
     def _build_plan_from_model(
