@@ -86,6 +86,10 @@ def test_extension_filter(tmp_path: Path) -> None:
     assert not (dst / "Movie.jpg").exists()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX readonly prefix doesn't translate to Windows path semantics",
+)
 def test_refuses_to_write_under_readonly_prefix(tmp_path: Path) -> None:
     src = tmp_path / "src"
     src.mkdir()
