@@ -32,7 +32,6 @@ import os
 import subprocess
 import sys
 import textwrap
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -151,9 +150,18 @@ def _drive_streaming(request: dict) -> tuple[list[dict], dict]:
 
 
 def test_get_settings_returns_persisted_values(
-    fake_tmdb: FakeTMDB, daemon_config_dir: Path
+    fake_tmdb: FakeTMDB,
+    daemon_config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    """get_settings returns the on-disk config as a dict."""
+    """get_settings returns the on-disk config as a dict.
+
+    Forces ``cwd`` to a directory with no ``.env`` so ``Settings.load`` doesn't
+    pick up the developer's repo-level ``.env`` (which contains a real TMDB
+    key and would make this test fragile in any checkout that has one).
+    """
+    monkeypatch.chdir(tmp_path)
     response = _drive_one(
         {
             "jsonrpc": "2.0",
@@ -277,34 +285,103 @@ def test_search_tmdb_free_returns_combined_candidates(
     assert kinds == {"movie", "tv"}
 
 
-def test_find_by_imdb_returns_candidate(fake_tmdb: FakeTMDB, daemon_config_dir: Path) -> None:
-    """find_by_imdb wraps the TMDB /find hit as a Candidate dict."""
+def _row_dict_for_test(
+    *,
+    source_path: str = "/tmp/Foo.2020.mkv",
+    title: str = "Foo",
+    year: int = 2020,
+    kind: str = "movie",
+    season: int | None = None,
+    episode: int | None = None,
+) -> dict:
+    """Build a minimal Row dict that the daemon's edit/find methods accept."""
+    return {
+        "row_id": source_path,
+        "source_path": source_path,
+        "parsed": {
+            "source_path": source_path,
+            "kind": kind,
+            "title_candidate": title,
+            "year": year,
+            "season": season,
+            "episode": episode,
+            "episode_end": None,
+            "episode_title": None,
+            "edition_tokens": [],
+            "quality_tokens": [],
+            "group_tag": None,
+            "part_marker": None,
+            "raw_filename": source_path.rsplit("/", 1)[-1],
+            "parent_dirs": [],
+            "skip_reason": None,
+        },
+        "candidate": None,
+        "show_name_hint": None,
+        "group_key": f"movie::{source_path}" if kind == "movie" else f"tv::{title}",
+        "skip": False,
+        "manual_title": None,
+        "manual_year": None,
+        "manual_season": None,
+        "manual_episode": None,
+        "manual_edition": None,
+        "imdb_id_override": None,
+        "anchor_kind_override": None,
+    }
+
+
+def test_find_by_imdb_returns_tmdb_candidate_on_hit(
+    fake_tmdb: FakeTMDB, daemon_config_dir: Path
+) -> None:
+    """find_by_imdb wraps the TMDB /find hit as a TMDB-anchored Candidate."""
     fake_tmdb.find_returns = MovieResult(tmdb_id=42, title="X", year=2010)
     response = _drive_one(
         {
             "jsonrpc": "2.0",
             "id": 30,
             "method": "find_by_imdb",
-            "params": {"imdb_id": "tt0000042"},
+            "params": {
+                "imdb_id": "tt0000042",
+                "row": _row_dict_for_test(),
+            },
         }
     )
     candidate = response["result"]["candidate"]
+    assert candidate["anchor_kind"] == "tmdb"
     assert candidate["anchor_id"] == "42"
     assert candidate["kind"] == "movie"
 
 
-def test_find_by_imdb_returns_none_on_miss(fake_tmdb: FakeTMDB, daemon_config_dir: Path) -> None:
-    """find_by_imdb returns null when TMDB has no /find hit."""
+def test_find_by_imdb_synthesizes_imdb_anchor_on_miss(
+    fake_tmdb: FakeTMDB, daemon_config_dir: Path
+) -> None:
+    """When TMDB has no /find hit, the daemon synthesizes an IMDb-anchored Candidate.
+
+    This mirrors the Qt orchestrator's ``on_imdb_resolve`` behavior so a WPF
+    user pasting an unknown IMDb id sees the same placeholder result as the
+    macOS Qt user. Without this, the WPF flow would silently drop the IMDb id.
+    """
     fake_tmdb.find_returns = None
     response = _drive_one(
         {
             "jsonrpc": "2.0",
             "id": 31,
             "method": "find_by_imdb",
-            "params": {"imdb_id": "tt9999999"},
+            "params": {
+                "imdb_id": "tt9999999",
+                "row": _row_dict_for_test(title="Unknown Film", year=1999, kind="movie"),
+            },
         }
     )
-    assert response["result"]["candidate"] is None
+    candidate = response["result"]["candidate"]
+    # The Qt path produces an imdb-anchored Candidate at 0.55 confidence; the
+    # daemon must do the same so the user can still proceed with an
+    # {imdb-tt9999999} folder anchor.
+    assert candidate is not None
+    assert candidate["anchor_kind"] == "imdb"
+    assert candidate["anchor_id"] == "tt9999999"
+    assert candidate["title"] == "Unknown Film"
+    assert candidate["year"] == 1999
+    assert abs(candidate["confidence"] - 0.55) < 0.001
 
 
 def test_iterate_anchor_search_returns_variant_used(
@@ -606,6 +683,20 @@ def test_invalid_json_yields_parse_error(fake_tmdb: FakeTMDB, daemon_config_dir:
     assert response["id"] is None
 
 
+def test_request_that_is_not_object_yields_invalid_request_error(
+    fake_tmdb: FakeTMDB, daemon_config_dir: Path
+) -> None:
+    """A JSON-valid request that's an array or string is rejected with -32600."""
+    stdin = io.StringIO(json.dumps([1, 2, 3]) + "\n")
+    stdout = io.StringIO()
+    server._serve(stdin, stdout)
+    out = stdout.getvalue().splitlines()
+    assert len(out) == 1
+    response = json.loads(out[0])
+    assert response["error"]["code"] == -32600
+    assert response["id"] is None
+
+
 def test_shutdown_method_ends_loop(fake_tmdb: FakeTMDB, daemon_config_dir: Path) -> None:
     stdin = io.StringIO(
         json.dumps({"jsonrpc": "2.0", "id": 1, "method": "get_settings", "params": {}})
@@ -748,10 +839,3 @@ def test_subprocess_bootstrap_hook_loads_fake_tmdb(tmp_path: Path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=2)
-
-
-# ---------------------------------------------------------------------------
-# Unused import guard: ``Iterator`` keeps the import list explanatory.
-# ---------------------------------------------------------------------------
-
-_ = Iterator

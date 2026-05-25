@@ -16,7 +16,7 @@ can be cross-checked side-by-side during the win-native rollout:
   with multi-season episode-list hydration.
 * :func:`run_picker_search` — TMDB search with cleaned-variant retries
   for zero-result fallback.
-* :func:`hydrate_anchor` — apply a chosen TMDB candidate to every row in
+* :func:`hydrate_group_with_anchor` — apply a chosen TMDB candidate to every row in
   a group and merge episode lists across present seasons.
 * :func:`build_candidate_for_search` — combined movie + TV results for
   a single-row TMDB search.
@@ -30,7 +30,6 @@ The native shell holds onto :class:`Row` dataclasses; the daemon's
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
@@ -474,53 +473,9 @@ def hydrate_group_with_anchor(
 
 
 # ---------------------------------------------------------------------------
-# Single-row TMDB / IMDb workflows.
+# Single-row IMDb workflow. (Free-text TMDB search is handled directly by
+# ``methods.search_tmdb_free`` since it has no per-row state to thread.)
 # ---------------------------------------------------------------------------
-
-
-def search_tmdb_for_row(
-    query: str,
-    year: int | None,
-    *,
-    tmdb: TMDBLike,
-) -> list[Candidate]:
-    """Combine movie + TV search results for a single-row TMDB search.
-
-    Mirrors ``Orchestrator.on_tmdb_search`` — the row is allowed to flip
-    kinds on a manual pick, so both endpoints contribute.
-    """
-    candidates: list[Candidate] = []
-    try:
-        movies = tmdb.search_movie(query, year)
-    except Exception:
-        movies = []
-    for m in movies:
-        candidates.append(
-            Candidate(
-                anchor_kind="tmdb",
-                anchor_id=str(m.tmdb_id),
-                kind="movie",
-                title=m.title,
-                year=m.year,
-                confidence=0.7,
-            )
-        )
-    try:
-        shows = tmdb.search_tv(query, year)
-    except Exception:
-        shows = []
-    for s in shows:
-        candidates.append(
-            Candidate(
-                anchor_kind="tmdb",
-                anchor_id=str(s.tmdb_id),
-                kind="tv",
-                title=s.title,
-                year=s.year,
-                confidence=0.7,
-            )
-        )
-    return candidates
 
 
 def resolve_imdb_for_row(
@@ -575,13 +530,6 @@ def resolve_imdb_for_row(
     return candidate, errors
 
 
-# ---------------------------------------------------------------------------
-# Apply collaborators (factory for production wiring).
-# ---------------------------------------------------------------------------
-
-PickerFactory = Callable[[str], None]
-
-
 __all__ = [
     "Group",
     "PickerSearchResult",
@@ -597,5 +545,4 @@ __all__ = [
     "resolve_imdb_for_row",
     "resolve_rows",
     "run_picker_search",
-    "search_tmdb_for_row",
 ]

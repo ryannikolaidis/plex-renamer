@@ -69,8 +69,21 @@ TMDBFactory = Callable[[Settings], TMDBLike]
 ResolverFactory = Callable[[TMDBLike, Settings], IMDbFallbackResolver]
 
 
+# Cache the TMDB client across calls, keyed on the credential pair the
+# settings supplied. Rebuilding the HTTPS session on every method call
+# would defeat connection reuse and the in-process request memoization
+# that ``TMDBCache`` performs on top of the disk cache. We DO want to
+# rebuild when the shell saves new credentials, hence the keyed cache.
+_TMDB_CLIENT_CACHE: dict[tuple[str, str], TMDBLike] = {}
+
+
 def _default_tmdb_factory(settings: Settings) -> TMDBLike:
-    """Construct the TMDB client + cache from the persisted settings."""
+    """Return a TMDB client + cache wrapper for the persisted settings.
+
+    Caches the constructed client per ``(tmdb_api_key, omdb_api_key)``
+    pair so the long-lived daemon reuses the HTTPS session across method
+    calls. ``save_settings`` invalidates entries that no longer match.
+    """
     api_key = settings.tmdb_api_key or os.environ.get("TMDB_API_KEY", "")
     if not api_key:
         # The daemon defers the auth failure until the first actual
@@ -79,8 +92,13 @@ def _default_tmdb_factory(settings: Settings) -> TMDBLike:
         # the cache wrapper has something to call through to; TMDB calls
         # will raise on first attempt.
         api_key = "missing-tmdb-key"
+    cache_key = (api_key, settings.omdb_api_key or "")
+    cached = _TMDB_CLIENT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     client = TMDBClient(api_key=api_key)
     cache = TMDBCache(client=client)
+    _TMDB_CLIENT_CACHE[cache_key] = cache
     return cache
 
 
@@ -182,10 +200,16 @@ def save_settings(params: dict[str, Any]) -> dict[str, Any]:
     new_settings = params.get("settings", params)
     config_path = _config_path_override()
     settings = Settings.load(config_path=config_path) if config_path else Settings.load()
+    prior_key = (settings.tmdb_api_key or "", settings.omdb_api_key or "")
     for key, value in new_settings.items():
         if hasattr(settings, key):
             setattr(settings, key, value)
     settings.save()
+    next_key = (settings.tmdb_api_key or "", settings.omdb_api_key or "")
+    if next_key != prior_key:
+        # Drop the cached TMDB client for the old credential pair so the
+        # next TMDB-touching call rebuilds with the new key.
+        _TMDB_CLIENT_CACHE.pop(prior_key, None)
     return _settings_to_dict(settings)
 
 
@@ -200,9 +224,11 @@ def parse_inputs(params: dict[str, Any]) -> dict[str, Any]:
     paths = [Path(p) for p in raw_paths]
     rows = orch.parse_input_paths(paths)
     groups = orch.group_rows(rows)
+    input_root = _common_parent([r.source_path for r in rows]) if rows else _common_parent(paths)
     return {
         "rows": [_row_to_dict(r) for r in rows],
         "groups": [_group_to_dict(g) for g in groups],
+        "input_root": str(input_root),
     }
 
 
@@ -223,9 +249,15 @@ def parse_and_resolve(params: dict[str, Any]) -> dict[str, Any]:
     rows = orch.parse_input_paths(paths)
     result = orch.resolve_rows(rows, resolver=resolver, tmdb=tmdb)
     groups = orch.group_rows(result.rows)
+    input_root = (
+        _common_parent([r.source_path for r in result.rows])
+        if result.rows
+        else _common_parent(paths)
+    )
     return {
         "rows": [_row_to_dict(r) for r in result.rows],
         "groups": [_group_to_dict(g) for g in groups],
+        "input_root": str(input_root),
         "errors": [{"source_path": p, "message": m} for p, m in result.errors],
     }
 
@@ -258,29 +290,34 @@ def search_tmdb_free(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def find_by_imdb(params: dict[str, Any]) -> dict[str, Any]:
-    """IMDb-paste resolver. Returns a Candidate dict (or ``None``)."""
+    """IMDb-paste resolver mirroring the Qt path's IMDb-anchor synthesis.
+
+    Routes through :func:`orch.resolve_imdb_for_row` which:
+
+    * Returns a TMDB-anchored Candidate at confidence 0.8 when TMDB
+      ``/find/{imdb_id}`` has a hit (movie or TV), hydrating the row's
+      hinted season for TV hits so the planner can title-match.
+    * Synthesizes an IMDb-anchored Candidate at confidence 0.55 when
+      TMDB has no hit — same shape the Qt orchestrator produces so the
+      user can still proceed with an ``{imdb-tt...}`` folder name.
+
+    The request shape carries a ``row`` dict (the row the user pasted
+    the IMDb id on) so the synthesis can fall back on the row's parsed
+    title / year / kind / season when TMDB misses. The shell is
+    expected to pass the current row dict from its state.
+    """
     imdb_id = str(params.get("imdb_id", ""))
+    row_dict = params.get("row")
+    if not isinstance(row_dict, dict):
+        raise ValueError("find_by_imdb requires a 'row' params field")
+    row = _row_from_dict(row_dict)
     settings = _load_settings_from_params(params)
     tmdb = _TMDB_FACTORY(settings)
-    try:
-        hit = tmdb.find_by_imdb_id(imdb_id)
-    except Exception as exc:
-        return {"candidate": None, "error": str(exc)}
-    if hit is None:
-        return {"candidate": None}
-    # Mirror the GUI's IMDb-resolve semantics: TMDB hits land as TMDB
-    # anchors at 0.8 confidence; the daemon does NOT hydrate season here
-    # because the caller may not have row context. ``select_anchor``
-    # hydrates per row.
-    if hasattr(hit, "tmdb_id"):
-        # Could be MovieResult or TVResult.
-        from plex_renamer.tmdb.models import MovieResult, TVResult
-
-        if isinstance(hit, MovieResult):
-            return {"candidate": schemas.movie_result_to_candidate_dict(hit, confidence=0.8)}
-        if isinstance(hit, TVResult):
-            return {"candidate": schemas.tv_result_to_candidate_dict(hit, confidence=0.8)}
-    return {"candidate": None}
+    candidate, errors = orch.resolve_imdb_for_row(row, imdb_id, tmdb=tmdb)
+    return {
+        "candidate": schemas.candidate_to_dict(candidate),
+        "errors": [{"source_path": p, "message": m} for p, m in errors],
+    }
 
 
 def iterate_anchor_search(params: dict[str, Any]) -> dict[str, Any]:

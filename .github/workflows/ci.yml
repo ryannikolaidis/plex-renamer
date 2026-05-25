@@ -72,15 +72,43 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: uv run pytest -v
 
-      - name: Build engine sidecar (Windows only)
+      - name: Build and smoke-test engine sidecar (Windows only)
         if: runner.os == 'Windows'
         shell: bash
         run: |
           uv run pyinstaller packaging/windows/plex-renamer-engined.spec --noconfirm
-          # Smoke: pipe a single get_settings request and assert the
-          # daemon emits one non-error response line. If the spec is
-          # broken (missing hidden imports, wrong entry point) this
-          # fails here rather than three slices later.
-          echo '{"jsonrpc":"2.0","id":1,"method":"get_settings","params":{}}' \
-            | ./dist/plex-renamer-engined/plex-renamer-engined.exe \
-            | python -c 'import sys, json; r = json.loads(sys.stdin.readline()); assert r["id"] == 1 and "result" in r, r; print("daemon smoke OK")'
+          # Multi-request smoke against the bundled binary. Catches spec
+          # breakage classes that a single-request smoke would miss:
+          #   - missing hidden imports / wrong entry point (the daemon
+          #     would crash before printing anything),
+          #   - --onefile single-shot behavior (the daemon would exit
+          #     after one response and the second request would hang),
+          #   - shutdown handling (the daemon's clean-exit path is
+          #     load-bearing for the shell's lifecycle).
+          # Pipes get_settings, then a second get_settings (proving the
+          # daemon is long-running), then shutdown (proving the clean
+          # exit path), then asserts the binary exited with code 0.
+          python -c "
+          import json, subprocess, sys
+          proc = subprocess.Popen(
+              ['./dist/plex-renamer-engined/plex-renamer-engined.exe'],
+              stdin=subprocess.PIPE,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE,
+              text=True,
+              bufsize=1,
+          )
+          def send(req):
+              proc.stdin.write(json.dumps(req) + '\n')
+              proc.stdin.flush()
+              return json.loads(proc.stdout.readline())
+          r1 = send({'jsonrpc': '2.0', 'id': 1, 'method': 'get_settings', 'params': {}})
+          assert r1.get('jsonrpc') == '2.0' and r1.get('id') == 1 and 'result' in r1, r1
+          r2 = send({'jsonrpc': '2.0', 'id': 2, 'method': 'get_settings', 'params': {}})
+          assert r2.get('id') == 2 and 'result' in r2, r2
+          r3 = send({'jsonrpc': '2.0', 'id': 3, 'method': 'shutdown'})
+          assert r3.get('id') == 3 and r3.get('result', {}).get('ok') is True, r3
+          proc.wait(timeout=10)
+          assert proc.returncode == 0, f'daemon exit code: {proc.returncode}, stderr: {proc.stderr.read()}'
+          print('daemon smoke OK')
+          "

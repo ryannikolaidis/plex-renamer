@@ -28,13 +28,17 @@ to the original request via ``params.id``.
 Shutdown
 --------
 
-Three ways to end the loop cleanly:
+Two ways to end the loop cleanly:
 
 1. Send ``{"jsonrpc": "2.0", "id": <n>, "method": "shutdown"}``. The
    server responds with ``{"result": {"ok": true}}`` and returns.
 2. Close the daemon's stdin (EOF). The loop returns with no extra output.
-3. SIGTERM / SIGINT — Python's default handler raises ``KeyboardInterrupt``;
-   the loop catches it and returns.
+
+SIGINT (Ctrl+C) is caught by Python's default ``KeyboardInterrupt``
+handler and the loop exits with code 0. SIGTERM is NOT installed —
+on SIGTERM the OS terminates the process without an orderly
+shutdown. Shells should send ``shutdown`` or close stdin before
+terminating the child.
 
 Parse errors emit a JSON-RPC error with ``id: null`` (per the spec).
 Unknown methods, bad params, and handler exceptions emit errors with
@@ -79,9 +83,25 @@ def main(
     # daemon-as-subprocess doesn't need a live TMDB key. The bootstrap
     # script runs with the daemon's globals available; the typical
     # shape is to import ``methods`` and call ``set_collaborators``.
+    #
+    # Hard-disable the hook in frozen (PyInstaller) builds. The
+    # production binary an end user runs from the installed location
+    # must NOT honor an env var that executes arbitrary Python. Tests
+    # exercising the daemon-as-subprocess use the source-tree
+    # ``uv run plex-renamer-engined`` entry point where ``sys.frozen``
+    # is unset.
     bootstrap = os.environ.get("PLEX_RENAMER_DAEMON_BOOTSTRAP")
     if bootstrap:
-        runpy.run_path(bootstrap)
+        if getattr(sys, "frozen", False):
+            sys.stderr.write(
+                "plex-renamer-engined: PLEX_RENAMER_DAEMON_BOOTSTRAP "
+                "ignored in frozen build (test-only hook).\n"
+            )
+            sys.stderr.flush()
+        else:
+            sys.stderr.write(f"plex-renamer-engined: running bootstrap hook {bootstrap!r}\n")
+            sys.stderr.flush()
+            runpy.run_path(bootstrap)
 
     try:
         _serve(in_stream, out_stream)
@@ -184,10 +204,13 @@ def _dispatch_streaming(
             saw_done = True
             break
         # Wrap as a progress notification carrying the request id so the
-        # shell can match it to the pending promise.
-        notification_params: dict[str, Any] = {"id": req_id}
+        # shell can match it to the pending promise. The request id is
+        # written last so a future event payload can never accidentally
+        # clobber it.
+        notification_params: dict[str, Any] = {}
         if isinstance(event, dict):
             notification_params.update(event)
+        notification_params["id"] = req_id
         _write(stdout, schemas.make_notification("progress", notification_params))
     if not saw_done:
         _write(
