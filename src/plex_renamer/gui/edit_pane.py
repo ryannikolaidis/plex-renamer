@@ -131,7 +131,11 @@ class EditPane(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._title_label)
-        layout.addWidget(self._tmdb_panel)
+        # Give the TMDB search panel a stretch factor so it gets the
+        # vertical room it needs when the edit pane is the dock-like
+        # right-hand widget; without the factor, the IMDb and Manual
+        # group boxes consume the slack and squish the search panel.
+        layout.addWidget(self._tmdb_panel, stretch=1)
         layout.addWidget(imdb_box)
         layout.addWidget(manual_box)
         layout.addWidget(self._skip_checkbox)

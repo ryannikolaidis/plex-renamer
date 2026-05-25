@@ -35,7 +35,9 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QFileDialog,
     QHBoxLayout,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -148,6 +150,24 @@ class MainWindow(QMainWindow):
         self._settings_btn = QPushButton("Settings...")
         self._settings_btn.clicked.connect(self._open_settings)
 
+        # Library-roots row: surface the current Movies/TV destinations
+        # so the user always sees where renamed files will land. The
+        # values were previously buried two levels deep (Settings ->
+        # Library roots...).
+        self._movies_root_label = QLabel()
+        self._movies_root_label.setObjectName("movies-root-label")
+        self._movies_root_change_btn = QPushButton("Change...")
+        self._movies_root_change_btn.setObjectName("movies-root-change-btn")
+        self._movies_root_change_btn.clicked.connect(self._change_movies_root)
+
+        self._tv_root_label = QLabel()
+        self._tv_root_label.setObjectName("tv-root-label")
+        self._tv_root_change_btn = QPushButton("Change...")
+        self._tv_root_change_btn.setObjectName("tv-root-change-btn")
+        self._tv_root_change_btn.clicked.connect(self._change_tv_root)
+
+        self._refresh_root_labels()
+
         # Wire panels to edit pane.
         self._source_panel.row_clicked.connect(self._on_row_clicked)
         self._target_panel.row_clicked.connect(self._on_row_clicked)
@@ -186,6 +206,17 @@ class MainWindow(QMainWindow):
         body.addWidget(side)
         body.setSizes([1100, 600])
 
+        # Library-roots row sits above the bottom action bar so the
+        # user sees where files land without having to open Settings.
+        roots_row = QHBoxLayout()
+        roots_row.addWidget(QLabel("Movies:"))
+        roots_row.addWidget(self._movies_root_label, stretch=1)
+        roots_row.addWidget(self._movies_root_change_btn)
+        roots_row.addSpacing(16)
+        roots_row.addWidget(QLabel("TV:"))
+        roots_row.addWidget(self._tv_root_label, stretch=1)
+        roots_row.addWidget(self._tv_root_change_btn)
+
         # Bottom bar: settings on the left, Preview + Apply on the right.
         bottom = QHBoxLayout()
         bottom.addWidget(self._settings_btn)
@@ -197,6 +228,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(central)
         layout.addWidget(self._drop_zone)
         layout.addWidget(body, stretch=1)
+        layout.addLayout(roots_row)
         layout.addLayout(bottom)
         self.setCentralWidget(central)
 
@@ -222,6 +254,59 @@ class MainWindow(QMainWindow):
     def _open_settings(self) -> None:
         dlg = SettingsDialog(self._settings, parent=self)
         dlg.exec()
+        # The dialog can mutate library roots via the nested
+        # LibraryRootsDialog; refresh the labels so the change shows up
+        # immediately in the main window.
+        self._refresh_root_labels()
+
+    # ----- Library roots --------------------------------------------------
+
+    def _refresh_root_labels(self) -> None:
+        """Repopulate the Movies/TV root labels from current Settings.
+
+        Unset roots render as italicized "Not set" with a yellow tint
+        so the user sees the destination isn't configured yet.
+        """
+        self._set_root_label(self._movies_root_label, self._settings.movies_root)
+        self._set_root_label(self._tv_root_label, self._settings.tv_root)
+
+    @staticmethod
+    def _set_root_label(label: QLabel, value: str | None) -> None:
+        if value:
+            label.setText(value)
+            label.setStyleSheet("")
+            label.setToolTip(value)
+        else:
+            label.setText("Not set — click Change... to choose")
+            # Yellow tint with italic to signal the missing destination.
+            label.setStyleSheet("color: #8a6d3b; font-style: italic;")
+            label.setToolTip("")
+
+    def _change_movies_root(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, "Pick the Movies root")
+        if chosen:
+            self._settings.movies_root = chosen
+            self._settings.save()
+            self._refresh_root_labels()
+
+    def _change_tv_root(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, "Pick the TV Shows root")
+        if chosen:
+            self._settings.tv_root = chosen
+            self._settings.save()
+            self._refresh_root_labels()
+
+    def movies_root_label(self) -> QLabel:
+        return self._movies_root_label
+
+    def tv_root_label(self) -> QLabel:
+        return self._tv_root_label
+
+    def movies_root_change_button(self) -> QPushButton:
+        return self._movies_root_change_btn
+
+    def tv_root_change_button(self) -> QPushButton:
+        return self._tv_root_change_btn
 
     # ----- Preview --------------------------------------------------------
 

@@ -544,10 +544,55 @@ class Orchestrator(QObject):
             for s in shows
         ]
         picker = self._deps.picker_factory(group_key)
+        # Pre-populate the search box with the show name hint so the user
+        # sees what the auto-seed query was, and can edit it directly
+        # when the seeded results don't include the right show.
+        if hasattr(picker, "set_search_text"):
+            picker.set_search_text(title_hint)
         picker.set_results(candidates)
         picker.show_chosen.connect(self.on_show_chosen)
+        # Hook up the picker's interactive search box. When the user
+        # types a different query, we re-fire TMDB and push results
+        # back into the picker in place.
+        if hasattr(picker, "search_requested"):
+            picker.search_requested.connect(self.on_picker_search)
         self._open_picker = picker
         picker.exec()
+
+    def on_picker_search(self, group_key: str, query: str) -> None:
+        """Re-query TMDB on behalf of an open picker and push results back.
+
+        Triggered by :attr:`ShowAnchorPicker.search_requested` when the
+        user types a different show name and clicks Search. The query
+        runs against the same ``search_tv`` collaborator as the
+        auto-seed; results land back on the picker via
+        :meth:`set_results`. Search failures are surfaced as resolver
+        errors against every row in the group AND the picker is left
+        with an empty list (the empty-label hint informs the user).
+        """
+        rows = self._rows_in_group(group_key)
+        for r in rows:
+            self._resolve_errors_by_path.pop(r.source_path, None)
+        try:
+            shows = self._deps.tmdb.search_tv(query, None)
+        except Exception as exc:
+            shows = []
+            for r in rows:
+                self._resolve_errors_by_path[r.source_path] = f"search_tv failed: {exc}"
+        self.resolve_errors_changed.emit(self._errors_snapshot())
+        candidates = [
+            Candidate(
+                anchor_kind="tmdb",
+                anchor_id=str(s.tmdb_id),
+                kind="tv",
+                title=s.title,
+                year=s.year,
+                confidence=0.7,
+            )
+            for s in shows
+        ]
+        if self._open_picker is not None and self._open_picker.group_key() == group_key:
+            self._open_picker.set_results(candidates)
 
     def on_show_chosen(self, group_key: str, candidate: Candidate) -> None:
         """Apply the picked show to every row in the group.

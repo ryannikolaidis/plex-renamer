@@ -680,3 +680,146 @@ def test_resolve_errors_cleared_on_success(tmp_path, qapp, mock_tmdb) -> None:
     assert rows[0].source_path not in remaining, (
         "Successful resolve_rows should clear stale errors for the affected paths"
     )
+
+
+def test_unknown_show_recovers_via_picker_search(tmp_path, qapp, mock_tmdb) -> None:
+    """End-to-end recovery flow when the dropped folder names an unknown show.
+
+    User drops ``MAX/Lazarus_2/s1/...`` -- the FakeTMDB knows
+    "Game Of Thrones" but not "Lazarus_2". The auto-resolve pass leaves
+    every row unresolved with a surfaced error. The user opens the
+    picker on the group, sees the empty list, types a corrected name
+    (here we simulate with "Game Of Thrones" since FakeTMDB knows it),
+    and the picker re-queries TMDB through the orchestrator. The
+    re-query produces candidates; picking the first one propagates the
+    candidate to every row in the group.
+
+    This is the dead-end the v0.1.1 user hit: empty picker, no
+    recourse. The fix is the search box on the picker plus the
+    ``on_picker_search`` orchestrator handler.
+    """
+    # Use the fixture-from-tree helper to mirror a real-shaped subtree.
+    import sys
+
+    scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
+    sys.path.insert(0, str(scripts_dir))
+    try:
+        from fixture_from_tree import mirror_tree  # type: ignore[import-not-found]
+    finally:
+        sys.path.pop(0)
+
+    src = tmp_path / "src"
+    show_dir = src / "Lazarus_2" / "s1"
+    show_dir.mkdir(parents=True)
+    for i in range(1, 4):
+        (show_dir / f"[S01.E{i:02d}] Episode {i}.mp4").touch()
+
+    root = tmp_path / "MAX"
+    mirror_tree(src, root, include_hidden=False, allowed_exts=None)
+    drop_root = root / "Lazarus_2"
+
+    settings = make_test_settings(tmp_path)
+    orchestrator, model = make_orchestrator(settings, tmdb=mock_tmdb, tmp_path=tmp_path)
+
+    # 1. Initial parse + resolve produces unresolved rows with errors.
+    rows = orchestrator.parse_and_resolve(drop_root)
+    assert len(rows) == 3
+    for r in rows:
+        assert r.candidate is None, f"{r.parsed.raw_filename} should not auto-resolve"
+    err_paths = {p for p, _ in orchestrator.last_resolve_errors()}
+    for r in rows:
+        assert r.source_path in err_paths, (
+            f"Row {r.source_path} stayed unresolved without surfacing an error"
+        )
+
+    # 2. The user opens the picker. We simulate by driving on_group_clicked
+    #    with a stub picker so the test stays headless. The orchestrator
+    #    seeds an empty result list (Lazarus_2 isn't in FakeTMDB).
+    captured: dict = {}
+
+    class _StubPicker:
+        def __init__(self, group_key):
+            self._group_key = group_key
+            self._results: list = []
+
+            class _Sig:
+                def __init__(self):
+                    self._slots: list = []
+
+                def connect(self, fn):
+                    self._slots.append(fn)
+
+                def emit(self, *args):
+                    for s in self._slots:
+                        s(*args)
+
+            self.show_chosen = _Sig()
+            self.search_requested = _Sig()
+
+        def group_key(self):
+            return self._group_key
+
+        def set_search_text(self, text):
+            captured["seeded_text"] = text
+
+        def set_results(self, c):
+            self._results = list(c)
+            captured["last_results"] = list(c)
+
+        def exec(self):
+            captured["execed"] = True
+            return 0
+
+    # Reinstall the orchestrator with a picker_factory pointing at our stub.
+    from plex_renamer.gui.orchestrator import Orchestrator, OrchestratorDeps
+    from plex_renamer.tmdb.fallback import IMDbFallbackResolver
+
+    stub_picker_holder: dict = {}
+
+    def _factory(group_key):
+        p = _StubPicker(group_key)
+        stub_picker_holder["picker"] = p
+        return p
+
+    resolver = IMDbFallbackResolver(mock_tmdb, omdb_api_key=None)
+    deps = OrchestratorDeps(
+        tmdb=mock_tmdb,
+        resolver=resolver,
+        movies_root=tmp_path / "Movies",
+        tv_root=tmp_path / "TV",
+        journal_dir=tmp_path / "journals",
+        cleanup_enabled=False,
+        picker_factory=_factory,
+    )
+    orchestrator2 = Orchestrator(model, deps)
+    orchestrator2.on_group_clicked("tv::Lazarus_2")
+
+    # The picker was seeded with the show name hint and an empty list
+    # (FakeTMDB doesn't know "Lazarus_2").
+    assert captured["seeded_text"] == "Lazarus_2"
+    assert captured["execed"] is True
+    assert captured["last_results"] == []
+
+    # 3. User types "Game Of Thrones" in the search box and triggers
+    #    search. The picker emits search_requested; the orchestrator
+    #    re-queries TMDB and pushes new results back to the picker.
+    picker = stub_picker_holder["picker"]
+    picker.search_requested.emit("tv::Lazarus_2", "Game Of Thrones")
+    assert captured["last_results"], "Picker should have received new candidates"
+    new_cands = captured["last_results"]
+    assert new_cands[0].title == "Game of Thrones"
+
+    # 4. User picks the first candidate. on_show_chosen propagates the
+    #    candidate to every row in the group.
+    picker.show_chosen.emit("tv::Lazarus_2", new_cands[0])
+
+    for r in model.rows():
+        assert r.candidate is not None, f"{r.parsed.raw_filename} should now have a candidate"
+        assert r.candidate.title == "Game of Thrones"
+
+    # Errors cleared for the affected rows.
+    err_paths_after = {p for p, _ in orchestrator2.last_resolve_errors()}
+    for r in model.rows():
+        assert r.source_path not in err_paths_after, (
+            f"Row {r.source_path} should not have a stale error after picker pick"
+        )

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -44,14 +45,31 @@ class TMDBSearchPanel(QWidget):
 
         self._query = QLineEdit()
         self._query.setPlaceholderText("Search TMDB...")
+        # Pin a sensible Qt-default-ish text-field height; without this
+        # the QFormLayout the pane is embedded in collapses the input
+        # to a few pixels on certain platforms (the v0.1.1 user
+        # reported the box was visually squished).
+        self._query.setMinimumHeight(28)
+        self._query.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._query.returnPressed.connect(self._emit_search)
 
         self._search_btn = QPushButton("Search")
+        self._search_btn.setMinimumHeight(30)
+        self._search_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._search_btn.clicked.connect(self._emit_search)
 
         self._results = QListWidget()
+        # The candidate list is the visual centerpiece of the panel;
+        # give it room to render multiple rows and let it grow when the
+        # containing dialog resizes.
+        self._results.setMinimumHeight(100)
+        self._results.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding
+        )
 
         self._use_btn = QPushButton("Use this")
+        self._use_btn.setMinimumHeight(30)
+        self._use_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._use_btn.clicked.connect(self._emit_chosen)
         self._use_btn.setEnabled(False)
         self._results.itemSelectionChanged.connect(self._on_selection_changed)
@@ -61,7 +79,7 @@ class TMDBSearchPanel(QWidget):
         row.addWidget(self._query)
         row.addWidget(self._search_btn)
         layout.addLayout(row)
-        layout.addWidget(self._results)
+        layout.addWidget(self._results, stretch=1)
         layout.addWidget(self._use_btn)
 
         self._candidates: list[Candidate] = []

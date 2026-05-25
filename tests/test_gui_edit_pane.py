@@ -87,6 +87,26 @@ def test_tmdb_search_signal(qtbot) -> None:
     assert received == [(src, "Some Movie")]
 
 
+def test_tmdb_search_panel_has_minimum_sizes(qtbot) -> None:
+    """Pin the size hints that fix the v0.1.1 visually-squished layout.
+
+    The TMDB search QLineEdit and the Search button both got crushed
+    to a few pixels of vertical space in the embedded edit pane. The
+    fix is explicit minimum heights plus a stretch factor on the
+    candidate list. A regression that removes these silently
+    re-introduces the bug.
+    """
+    from plex_renamer.gui.tmdb_search_panel import TMDBSearchPanel
+
+    panel = TMDBSearchPanel()
+    qtbot.addWidget(panel)
+
+    assert panel._query.minimumHeight() >= 28
+    assert panel._search_btn.minimumHeight() >= 30
+    assert panel._use_btn.minimumHeight() >= 30
+    assert panel._results.minimumHeight() >= 100
+
+
 def test_candidate_chosen_sets_model_candidate(qtbot) -> None:
     from plex_renamer.gui.edit_pane import EditPane
     from plex_renamer.gui.models import ItemModel
