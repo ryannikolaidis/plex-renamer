@@ -92,6 +92,16 @@ class ItemRow:
     # the raw id here; the resolver re-runs against this id.
     imdb_id_override: str | None = None
     anchor_kind_override: Literal["tmdb", "imdb"] | None = None
+    # The SHOW name derived from the path tree (TV rows only). For
+    # filenames like ``[S01.E01] Goodbye Cruel World.mp4`` the parser
+    # correctly puts the episode title in ``episode_title`` and leaves
+    # ``title_candidate`` empty; the show name lives on a parent
+    # directory or on the user's drop root. The orchestrator's
+    # ``derive_show_name`` populates this at parse time so the source
+    # panel's group label, the resolver's TMDB query, and the
+    # show-anchor picker all agree on the show name without each having
+    # to walk the path tree independently.
+    show_name_hint: str | None = None
 
     @property
     def source_path(self) -> Path:
@@ -107,15 +117,23 @@ class ItemRow:
     def group_key(self) -> str:
         """Group rows by detected show or movie.
 
-        For TV, the show title (parser-cleaned) anchors the group so the
-        UI can present "Show X — 12 episodes" with one anchor picker. For
-        movies, each movie is its own group keyed by the source path so
-        per-row review is the default.
+        For TV, the SHOW name anchors the group so the UI can present
+        "Show X — 12 episodes" with one anchor picker. The preferred
+        source is ``show_name_hint`` (derived from the path tree at
+        parse time); when that's absent (older test paths that
+        instantiate ``ItemRow`` without going through the orchestrator)
+        we fall back to ``title_candidate`` and finally the closest
+        parent directory name. The fallback chain matters for back-
+        compat with tests that pre-date the hint.
+
+        For movies, each movie is its own group keyed by the source
+        path so per-row review is the default.
         """
         if self.parsed.kind == "tv":
+            hint = self.show_name_hint
+            if hint:
+                return f"tv::{hint}"
             base = self.parsed.title_candidate or ""
-            # Parent directory name is a stronger group hint when the
-            # filename itself omits the show.
             parent = (
                 self.parsed.parent_dirs[-1] if self.parsed.parent_dirs else self.parsed.raw_filename
             )

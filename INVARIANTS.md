@@ -71,6 +71,17 @@ These are product invariants, not implementation requirements. They survive refa
 - TMDB API responses are cached to a per-user cache directory. Search-query responses expire after 7 days. ID lookups (movie/TV/episode by TMDB ID) are cached indefinitely — these results do not change.
 - The operation journal persists in the same per-user data directory. The most recent batch's journal is readable for undo from any subsequent run, not just the run that created it. Older journals are retained for at least 30 days.
 
+## Testing discipline
+
+End-to-end pipeline correctness on the corpus generator's output is a load-bearing CI gate. Every change that touches the parser, the TMDB resolver, the orchestrator's resolve flow, the planner's path emission, or the GUI's group/edit-pane logic must keep `tests/test_integration_corpus_pipeline.py` green. The test runs the slice-2 corpus generator (every observed input pattern + every plausible permutation) through the full parse → resolve → plan pipeline with a hermetic mock TMDB, asserting that:
+
+- Every TV episode under a recognized show in the corpus produces a Candidate with `anchor_kind="tmdb"` (no silent failures to `<unresolved>`).
+- Group labels in the source panel are the show name, not the first episode's filename or a season folder name.
+- Show-anchor picker queries TMDB with the show name derived from the path tree, not with the first row's episode title.
+- Proposed Plex paths match the canonical shape end-to-end.
+
+The corpus generator is the source of truth for the input patterns the app must handle. Per-layer unit tests (parser tests, planner path tests, GUI widget tests) verify individual components; the corpus pipeline test verifies they compose correctly. Both layers are mandatory.
+
 ## Out of scope
 
 The following are explicitly not in scope. The product does not do these things.
