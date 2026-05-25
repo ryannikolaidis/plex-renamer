@@ -91,20 +91,54 @@ def _ensure_tmdb_key(settings: Settings) -> str | None:
     return key
 
 
-def build_window(settings: Settings, deps: OrchestratorDeps) -> MainWindow:
+def build_window(
+    settings: Settings,
+    deps: OrchestratorDeps | None = None,
+    *,
+    tmdb_override: object | None = None,
+) -> tuple[MainWindow, Orchestrator]:
     """Assemble :class:`MainWindow` + :class:`Orchestrator` + wrappers.
 
-    Returns the wired-up MainWindow ready to show. Extracted from
-    :func:`main` so an integration test can exercise the EXACT same
-    wrappers production builds. Any divergence between the test's
-    wiring and production's wiring would otherwise let regressions
-    sneak through the headless tests (e.g., a ``_parse_fn`` shape
-    drift) — see ``tests/test_gui_app_integration.py``.
+    Returns ``(window, orchestrator)`` so callers can drive the
+    orchestrator directly (integration tests bypass the parsed_inputs
+    signal to inspect intermediate state). Extracted from :func:`main`
+    so an integration test can exercise the EXACT same wrappers
+    production builds — any divergence between the test's wiring and
+    production's wiring would otherwise let regressions sneak through
+    the headless tests (e.g., a ``_parse_fn`` shape drift).
+
+    Two construction styles:
+
+    * Production: caller builds an :class:`OrchestratorDeps` with a real
+      TMDB cache / resolver / library roots and passes it via ``deps``.
+    * Integration tests: caller passes ``tmdb_override`` (a fake
+      implementing the ``_TMDBLike`` protocol). The function constructs
+      a default deps bundle pointed at the settings' library roots and
+      uses the override in place of a real TMDB client.
 
     The wrappers themselves are intentionally trivial: they exist to
     bind the orchestrator's ``parse`` / ``apply`` / ``preview`` methods
     into the ``MainWindow`` constructor.
     """
+    if deps is None:
+        if tmdb_override is None:
+            raise ValueError("build_window requires either deps or tmdb_override")
+        # Build a default deps bundle so integration tests can pass
+        # only the TMDB fake. The library roots come from settings;
+        # journal_dir is namespaced under the movies root so the
+        # filesystem layout the test sees mirrors production.
+        movies_root = Path(settings.movies_root) if settings.movies_root else Path.home() / "Movies"
+        tv_root = Path(settings.tv_root) if settings.tv_root else Path.home() / "TV"
+        resolver = IMDbFallbackResolver(tmdb_override, omdb_api_key=settings.omdb_api_key)
+        deps = OrchestratorDeps(
+            tmdb=tmdb_override,  # type: ignore[arg-type]
+            resolver=resolver,
+            movies_root=movies_root,
+            tv_root=tv_root,
+            journal_dir=movies_root / ".plex-renamer-journals",
+            cleanup_enabled=settings.cleanup_enabled,
+        )
+
     orchestrator_holder: dict[str, Orchestrator] = {}
 
     # The window's ``parse_fn`` is typed as
@@ -134,7 +168,7 @@ def build_window(settings: Settings, deps: OrchestratorDeps) -> MainWindow:
     orchestrator = Orchestrator(window.item_model(), deps, main_window=window)
     orchestrator_holder["orch"] = orchestrator
     orchestrator.connect(window)
-    return window
+    return window, orchestrator
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -180,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         cleanup_enabled=settings.cleanup_enabled,
     )
 
-    window = build_window(settings, deps)
+    window, _orchestrator = build_window(settings, deps)
     window.show()
     return app.exec()
 

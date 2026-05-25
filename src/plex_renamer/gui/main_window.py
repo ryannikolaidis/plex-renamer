@@ -98,6 +98,12 @@ class MainWindow(QMainWindow):
     group_clicked = Signal(str)  # group_key
     reanchor_requested = Signal(Path)  # collision target
 
+    # Fired when the user changes a library root via the bottom-bar
+    # Change... button. The orchestrator listens and rebuilds its deps
+    # so the next Preview / Apply reads the freshly-picked paths instead
+    # of the snapshot taken at startup.
+    library_roots_changed = Signal(str, str)  # movies_root, tv_root
+
     def __init__(
         self,
         settings: Settings,
@@ -109,7 +115,13 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("plex-renamer")
-        self.setMinimumSize(1100, 700)
+        # Minimum height bumped from 700 -> 900 so the edit pane (which
+        # needs ~600-700px of vertical room to render the TMDB search
+        # panel + IMDb override + Manual override at their natural
+        # sizes) doesn't get squeezed below its children's sizeHints
+        # on a fresh launch. The previous 700px floor visibly crushed
+        # the TMDB search results list to a couple of rows.
+        self.setMinimumSize(1100, 900)
         # Default window geometry. The minimum keeps the layout
         # functional on small screens; the resize gives the right pane
         # enough room not to clip the run-report's Errors list and the
@@ -193,12 +205,39 @@ class MainWindow(QMainWindow):
         panels.setSizes([700, 700])
 
         # Right side: edit pane stacked above collision review and run
-        # report. We use a splitter so the user can resize.
+        # report. We use a splitter so the user can resize. The edit
+        # pane hosts the TMDB search panel + IMDb / Manual override
+        # boxes; collectively those widgets need ~600px of vertical
+        # space to render at their natural sizes. The collision
+        # review and run report widgets ship with large
+        # ``minimumSizeHint`` values (their child lists / forms add
+        # up to 200+ pixels each), which previously starved the edit
+        # pane to ~350px on first show and crushed the TMDB search
+        # results list. Cap their MAXIMUM heights so the splitter
+        # apportions the slack to the edit pane; the user can still
+        # see content in those widgets when they're populated, and
+        # the cap doesn't restrict the run report's scroll regions.
+        # Cap collision review and run report so they don't claim more
+        # vertical space than they need when empty. The edit pane is the
+        # primary interaction surface; the other two are passive
+        # reporting widgets that only get populated AFTER a preview /
+        # apply, so on first paint they should be compact.
+        self._collision_review.setMaximumHeight(120)
+        self._run_report.setMaximumHeight(170)
         side = QSplitter()
         side.setOrientation(Qt.Orientation.Vertical)
         side.addWidget(self._edit_pane)
         side.addWidget(self._collision_review)
         side.addWidget(self._run_report)
+        # Bias the splitter strongly toward the edit pane — without
+        # this, the v0.1.3 user reported the IMDb / Manual override
+        # boxes were hidden below a scroll fold even on a desktop-sized
+        # window. The edit pane needs ~570px to render all its content
+        # without scrolling.
+        side.setStretchFactor(0, 10)
+        side.setStretchFactor(1, 1)
+        side.setStretchFactor(2, 1)
+        self._side_splitter = side
 
         # Body splitter: panels on the left, side on the right.
         body = QSplitter()
@@ -231,6 +270,32 @@ class MainWindow(QMainWindow):
         layout.addLayout(roots_row)
         layout.addLayout(bottom)
         self.setCentralWidget(central)
+
+    def showEvent(self, event):  # noqa: N802 — Qt override
+        """Apply the side splitter's initial sizes after layout is realized.
+
+        ``QSplitter.setSizes`` only honors its argument once the splitter
+        has been polished and shown; calling it from ``_build_layout``
+        before the widgets are realized has no effect (Qt rebalances
+        on the first show event). We bias the side splitter so the
+        edit pane gets the dominant share — without this, the TMDB
+        search list gets crushed below the rendered height needed to
+        display search results.
+        """
+        super().showEvent(event)
+        total = self._side_splitter.height()
+        if total <= 0:
+            return
+        # Give the edit pane the dominant share (80%) so the IMDb +
+        # Manual override boxes fit without forcing the user to scroll
+        # the edit pane viewport on a typical desktop window. The
+        # remaining 20% splits between collision review (8%) and run
+        # report (12%); both have maxHeight caps so they cap out at
+        # their natural sizeHint when empty.
+        edit_h = int(total * 0.80)
+        coll_h = int(total * 0.08)
+        run_h = total - edit_h - coll_h
+        self._side_splitter.setSizes([edit_h, coll_h, run_h])
 
     # ----- Drop handling --------------------------------------------------
 
@@ -288,6 +353,9 @@ class MainWindow(QMainWindow):
             self._settings.movies_root = chosen
             self._settings.save()
             self._refresh_root_labels()
+            self.library_roots_changed.emit(
+                self._settings.movies_root or "", self._settings.tv_root or ""
+            )
 
     def _change_tv_root(self) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "Pick the TV Shows root")
@@ -295,6 +363,9 @@ class MainWindow(QMainWindow):
             self._settings.tv_root = chosen
             self._settings.save()
             self._refresh_root_labels()
+            self.library_roots_changed.emit(
+                self._settings.movies_root or "", self._settings.tv_root or ""
+            )
 
     def movies_root_label(self) -> QLabel:
         return self._movies_root_label

@@ -179,6 +179,19 @@ class ItemModel(QObject):
         self._rows = []
         self.rows_reset.emit()
 
+    def notify_rows_reset(self) -> None:
+        """Force a panel rebuild without mutating data.
+
+        Used by callers that directly mutate ``ItemRow`` fields (e.g.
+        the orchestrator backfilling ``show_name_hint`` on TV rows after
+        ``set_rows`` already fired). Direct mutation bypasses the
+        per-field setters that emit ``row_changed``, leaving the panels
+        rendering stale labels. ``notify_rows_reset`` re-emits
+        ``rows_reset`` so the source/target panels regenerate their
+        tree from the current row state.
+        """
+        self.rows_reset.emit()
+
     # ----- Access ---------------------------------------------------------
 
     def rows(self) -> list[ItemRow]:

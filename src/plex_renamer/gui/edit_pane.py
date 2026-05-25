@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -87,6 +88,13 @@ class EditPane(QWidget):
         self._anchor_tmdb.toggled.connect(self._on_anchor_toggled)
 
         imdb_box = QGroupBox("IMDb override")
+        # The whole edit pane lives inside a QScrollArea (see the
+        # bottom of this method), so the override box keeps its natural
+        # Preferred/Preferred policy — Fixed previously caused the inner
+        # QFormLayout rows to OVERLAP when Qt was forced to compress the
+        # box below sizeHint. With a scroll wrapper there's always room
+        # for sizeHint and the user scrolls when the right column is
+        # short.
         imdb_layout = QFormLayout(imdb_box)
         imdb_row = QHBoxLayout()
         imdb_row.addWidget(self._imdb_input)
@@ -114,6 +122,10 @@ class EditPane(QWidget):
         self._apply_overrides_btn.clicked.connect(self._on_apply_overrides)
 
         manual_box = QGroupBox("Manual override")
+        # Default Preferred policy — see imdb_box note above. The
+        # QScrollArea wrapper at the bottom prevents the squish-and-
+        # overlap behavior that the previous Fixed policy was trying to
+        # work around.
         manual_layout = QFormLayout(manual_box)
         manual_layout.addRow("Title:", self._manual_title)
         manual_layout.addRow("Year:", self._manual_year)
@@ -129,17 +141,46 @@ class EditPane(QWidget):
         self._commit_btn = QPushButton("Done")
         self._commit_btn.clicked.connect(self._on_commit)
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(self._title_label)
-        # Give the TMDB search panel a stretch factor so it gets the
-        # vertical room it needs when the edit pane is the dock-like
-        # right-hand widget; without the factor, the IMDb and Manual
-        # group boxes consume the slack and squish the search panel.
-        layout.addWidget(self._tmdb_panel, stretch=1)
-        layout.addWidget(imdb_box)
-        layout.addWidget(manual_box)
-        layout.addWidget(self._skip_checkbox)
-        layout.addWidget(self._commit_btn)
+        # Keep references on the instance so tests can read the actual
+        # rendered heights and assert the layout is not crushed.
+        self._imdb_box = imdb_box
+        self._manual_box = manual_box
+
+        # Build the inner content widget. The TMDB search panel still
+        # gets a stretch factor so it claims any extra vertical room
+        # inside the scroll viewport; the override boxes use their
+        # natural sizeHint and the scroll area handles the case where
+        # the right column is too short to fit everything.
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.addWidget(self._title_label)
+        # The TMDB panel needs enough room for the query row + a few
+        # result rows. 200px leaves space for the IMDb + Manual override
+        # boxes to fit on a typical 850-1000px tall window without
+        # forcing the user to scroll the edit pane viewport.
+        self._tmdb_panel.setMinimumHeight(200)
+        inner_layout.addWidget(self._tmdb_panel, stretch=1)
+        inner_layout.addWidget(imdb_box)
+        inner_layout.addWidget(manual_box)
+        inner_layout.addWidget(self._skip_checkbox)
+        inner_layout.addWidget(self._commit_btn)
+        inner_layout.addStretch(0)
+
+        # Wrap the inner content in a QScrollArea so the override boxes
+        # can claim their natural sizeHint without competing with the
+        # other widgets. When the right column is short, the user
+        # scrolls vertically instead of seeing the inner widgets crushed
+        # below their sizeHint (which causes the QFormLayout rows to
+        # OVERLAP — the v0.1.3 user-reported squish).
+        self._scroll = QScrollArea()
+        self._scroll.setWidget(inner)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self._scroll)
 
     # ----- Loading / unloading -------------------------------------------
 
@@ -238,6 +279,24 @@ class EditPane(QWidget):
         if self._current_path is None:
             return
         self.edit_committed.emit(self._current_path)
+
+    # ----- Test accessors ------------------------------------------------
+
+    def tmdb_panel(self) -> TMDBSearchPanel:
+        """Return the inner :class:`TMDBSearchPanel`.
+
+        Used by integration tests that need to inspect the rendered
+        height of the search panel after layout (Bug B regression gate).
+        """
+        return self._tmdb_panel
+
+    def imdb_box(self) -> QGroupBox:
+        """Return the IMDb override group box."""
+        return self._imdb_box
+
+    def manual_box(self) -> QGroupBox:
+        """Return the manual override group box."""
+        return self._manual_box
 
 
 __all__ = ["EditPane"]

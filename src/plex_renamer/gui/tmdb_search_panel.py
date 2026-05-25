@@ -59,10 +59,13 @@ class TMDBSearchPanel(QWidget):
         self._search_btn.clicked.connect(self._emit_search)
 
         self._results = QListWidget()
-        # The candidate list is the visual centerpiece of the panel;
-        # give it room to render multiple rows and let it grow when the
-        # containing dialog resizes.
-        self._results.setMinimumHeight(100)
+        # The candidate list is the visual centerpiece of the panel.
+        # 160px is a four-to-five-row visual minimum that survives
+        # neighbor widgets claiming the rest of the dock-style vertical
+        # splitter. Smaller minima get crushed when the override boxes
+        # below sit at their natural compact size — the slack flows
+        # away from the search panel rather than into it.
+        self._results.setMinimumHeight(160)
         self._results.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding
         )

@@ -44,6 +44,8 @@ These are product invariants, not implementation requirements. They survive refa
 - A power-user "auto-accept top hit" toggle is available, hidden behind a settings entry, OFF by default. When on, all items with a TMDB top hit are treated as auto-accept regardless of normalized title or year match.
 - Nothing on disk changes until the user clicks Apply on a reviewed plan. The plan is computed and displayed first; the user can edit individual rows; only an explicit Apply triggers filesystem operations.
 - The review UI is a two-panel layout: source files on the left (grouped by detected show/movie), proposed Plex target paths on the right. Clicking any row opens an edit pane with TMDB free-text search, IMDb ID paste, manual title/year/S/E/edition override fields, and a skip toggle.
+- The source and target panels group by the same key and render the same group label for every state. When the group is unresolved (no Candidate yet), the label is the show-name hint derived from the path tree, never the first file's episode title or raw filename. When the group is resolved, the label is the Candidate title with year. Both panels apply this rule in lock-step — they never disagree about what a group is called.
+- The show-anchor picker surfaces a hyperlink to every candidate's canonical record on themoviedb.org (or imdb.com for IMDb anchors) plus a "View on TMDB" / "View on IMDb" button that opens the link in the system browser. The user can validate every suggestion against the source before committing the pick. The picker is also relevance-ranked locally: exact and prefix matches outrank distant fuzzy matches regardless of TMDB's popularity ordering, so the literal title the user typed wins over similarly-named shows. When the auto-seeded query returns zero results, the orchestrator retries with cleaned variants of the query (strip trailing `_<digits>`, parenthesized suffixes, leading "The ") and surfaces a notice naming the variant that produced the visible results.
 
 ## Sidecars and adjacent files
 
@@ -68,6 +70,7 @@ These are product invariants, not implementation requirements. They survive refa
 ## Persistence
 
 - The TMDB API key, OMDB API key (optional), library roots (`Movies/` and `TV Shows/` paths), the source-cleanup toggle state, and the auto-accept-top-hit toggle state all persist to the OS-appropriate app-config location across runs (macOS: `~/Library/Application Support/plex-renamer/config.json`; Windows: `%APPDATA%\plex-renamer\config.json`). Settings can be edited from the UI at any time.
+- Library roots are LIVE-mutable. Changing a root via the bottom-bar Change... button updates the orchestrator's view of those paths before the next Preview or Apply. The planner does not snapshot roots at startup; every plan build reads the current value. The same rule holds for the cleanup-enabled toggle and the TMDB / OMDB API keys: changes propagate to the next operation without restarting the app.
 - The TMDB API key is read from `.env` in the working directory on first run when no app-config key is present. Once read, it persists; subsequent runs do not re-read `.env`. The user can edit the key in the settings dialog.
 - TMDB API responses are cached to a per-user cache directory. Search-query responses expire after 7 days. ID lookups (movie/TV/episode by TMDB ID) are cached indefinitely — these results do not change.
 - The operation journal persists in the same per-user data directory. The most recent batch's journal is readable for undo from any subsequent run, not just the run that created it. Older journals are retained for at least 30 days.
@@ -83,7 +86,19 @@ End-to-end pipeline correctness on the corpus generator's output is a load-beari
 
 The corpus generator is the source of truth for the input patterns the app must handle. Per-layer unit tests (parser tests, planner path tests, GUI widget tests) verify individual components; the corpus pipeline test verifies they compose correctly. Both layers are mandatory.
 
-See [`docs/testing-retrospective-v0.1.0.md`](docs/testing-retrospective-v0.1.0.md) for the full retrospective on how this discipline was learned (the v0.1.0 → v0.1.1 hotfix) and what it means for future briefs: every project whose core value is a pipeline must claim end-to-end pipeline correctness against realistic input as an explicit AC, not just per-layer units.
+Visual end-to-end tests use `widget.grab()` to capture PNG screenshots at each step of the user's flow. Tests assert rendered widget heights / structure, not just widget construction. Screenshots are saved to a known path so a human (or LLM) can inspect them when the test fails or when changing UI code. The Lazarus_2 recovery flow (`tests/test_visual_e2e_lazarus_recovery.py`) is the canonical example: it drives drop → group-label assertion (BOTH panels) → row click → edit-pane layout assertion → group click → picker assertion (including URL hyperlink + view button) → search → pick → resolution → preview → library-root change → re-preview, taking screenshots that together depict the user's full recovery journey.
+
+Visual tests assert that widgets render at AT LEAST their `sizeHint().height()`. A widget rendered below its sizeHint means Qt was forced to compress it, and a compressed `QFormLayout` / `QGroupBox` causes its inner rows to overlap visually. Asserting on `widget.height() >= widget.sizeHint().height()` is the regression gate that catches the "squished" UX class. The TMDB search panel additionally has an explicit minimum-height assertion (`>= 150px`) because its own min-heights sum to ~158px and any value below that means the layout policy is broken.
+
+Visual tests run at a mid-sized window (1400×850), not the developer's full screen. Larger windows accidentally hide layout bugs by giving every widget room. The 1400×850 window puts the right-column splitter under enough pressure that broken size policies actually fail the assertions, while still being a realistic shape a user would have.
+
+Visual tests cover BOTH the resolved AND unresolved states. Asserting only on the post-pick happy path lets bugs that only manifest before resolution slip through. The drop → unresolved-group-label assertion is its own step, separate from the post-pick assertions.
+
+When the UI has two parallel widgets (source panel + target panel), tests assert behavior on BOTH. Mirror logic in two places means tests need to mirror in two places too — fixing only one and tests passing is how the v0.1.3 target-panel label bug shipped.
+
+Configuration that the user can change from the UI gets a regression test for the change → re-operation path: change a library root mid-session, re-run Preview, verify the new operation reflects the change. This is the "live-mutable settings" coverage; without it the user reports "I changed the root but it didn't take effect" and we ship a snapshot bug.
+
+See [`docs/testing-retrospective-v0.1.0.md`](docs/testing-retrospective-v0.1.0.md) for the original (v0.1.0 → v0.1.1) retrospective, [`docs/decisions.md`](docs/decisions.md) for the WHY behind every load-bearing architectural choice, and [`docs/issue-retrospective.md`](docs/issue-retrospective.md) for the full inventory of bugs we hit during development plus the prompt-modification proposals each one motivates.
 
 ## Out of scope
 
