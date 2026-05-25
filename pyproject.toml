@@ -1,6 +1,6 @@
 [project]
 name = "plex-renamer"
-version = "0.1.1"
+version = "0.1.2"
 description = "Cross-platform desktop app that renames movie and TV files into Plex's expected naming format."
 readme = "README.md"
 requires-python = ">=3.13"
