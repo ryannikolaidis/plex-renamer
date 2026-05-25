@@ -79,6 +79,29 @@ class FakeTMDB:
         (1, 10, "Fire and Blood"),
     )
 
+    # Realistic 10-episode list for GoT season 2; lets the multi-season
+    # hydration test verify the merged Candidate's episode_list spans
+    # both seasons.
+    _GOT_SEASON_2: tuple[tuple[int, int, str], ...] = (
+        (2, 1, "The North Remembers"),
+        (2, 2, "The Night Lands"),
+        (2, 3, "What Is Dead May Never Die"),
+        (2, 4, "Garden of Bones"),
+        (2, 5, "The Ghost of Harrenhal"),
+        (2, 6, "The Old Gods and the New"),
+        (2, 7, "A Man Without Honor"),
+        (2, 8, "The Prince of Winterfell"),
+        (2, 9, "Blackwater"),
+        (2, 10, "Valar Morghulis"),
+    )
+
+    # Doctor Who specials (S00) — minimal list so the specials-routing
+    # test can fuzzy-match "Time Crash" against an episode_list.
+    _DOCTOR_WHO_SPECIALS: tuple[tuple[int, int, str], ...] = (
+        (0, 1, "Time Crash"),
+        (0, 2, "Music of the Spheres"),
+    )
+
     def __init__(self) -> None:
         # Record every call so tests can introspect what the orchestrator
         # asked for; lets us verify the show-anchor picker sent the
@@ -115,6 +138,12 @@ class FakeTMDB:
         self.calls.append(("get_season", (tmdb_id, season)))
         if tmdb_id == 1399 and season == 1:
             return [Episode(season=s, episode=e, title=t) for (s, e, t) in self._GOT_SEASON_1]
+        if tmdb_id == 1399 and season == 2:
+            return [Episode(season=s, episode=e, title=t) for (s, e, t) in self._GOT_SEASON_2]
+        if tmdb_id == 57243 and season == 0:
+            return [
+                Episode(season=s, episode=e, title=t) for (s, e, t) in self._DOCTOR_WHO_SPECIALS
+            ]
         # Realistic-shape minimal episode list for any other known show:
         # one episode per season. This is enough for the planner to
         # synthesize a valid path; the matcher accepts synthetic
@@ -469,3 +498,185 @@ def test_full_corpus_resolves_under_a_drop(tmp_path, qapp, mock_tmdb) -> None:
     for r in rows:
         assert r.parsed.kind != "unknown"
         assert r.parsed.skip_reason is None
+
+
+# --- Gap-fill: high-priority corpus patterns the smoke test only walked ----
+
+
+def test_doctor_who_classic_flat_with_season_no_silent_unresolved(
+    tmp_path, qapp, mock_tmdb
+) -> None:
+    """Doctor Who Classic flat files with the season buried mid-title.
+
+    The corpus generator emits filenames shaped like
+
+        'The Tomb of the Cybermen  ANIMATED FULL EPISODES  Season 5  Doctor Who Classic.mp4'
+
+    where the show name lives at the END of the filename, not on a
+    parent directory. The parser classifies these as ``tv`` (bare
+    season-only signal) but ``derive_show_name`` falls back to
+    ``input_root.name`` because there's no non-season parent folder.
+
+    The bug being pinned is "silent unresolved": before the round-2
+    fix, a TMDB miss for the wrong query (``input_root.name`` rather
+    than "Doctor Who") left the row without a candidate and without
+    any error surfaced. After the fix, either the resolver matches
+    Doctor Who OR the failure shows up in
+    :meth:`Orchestrator.last_resolve_errors`. This test pins the
+    invariant: no row may silently stay unresolved.
+    """
+    root = tmp_path / "Video"
+    root.mkdir()
+    file = (
+        root / "The Tomb of the Cybermen  ANIMATED FULL EPISODES  Season 5  Doctor Who Classic.mp4"
+    )
+    file.touch()
+
+    settings = make_test_settings(tmp_path)
+    orchestrator, _model = make_orchestrator(settings, tmdb=mock_tmdb, tmp_path=tmp_path)
+    rows = orchestrator.parse_and_resolve(root)
+
+    # The parser may classify this filename differently depending on
+    # how it tokenizes the trailing show name; what matters is that no
+    # row silently stays without either a candidate or a surfaced
+    # error. We assert the no-silent-unresolved invariant against
+    # every TV row produced.
+    tv_rows = [r for r in rows if r.parsed.kind == "tv"]
+    assert tv_rows, "Doctor Who Classic flat file should produce at least one TV row"
+    error_paths = {p for p, _ in orchestrator.last_resolve_errors()}
+    for r in tv_rows:
+        if r.candidate is None:
+            assert r.source_path in error_paths, (
+                f"TV row {r.source_path} stayed unresolved without surfacing an error"
+            )
+
+
+def test_sidecar_subtitles_retarget_with_video(tmp_path, qapp, mock_tmdb) -> None:
+    """``.en.srt`` / ``.en.forced.srt`` / ``.en.sdh.srt`` sidecars travel with the video.
+
+    A video with three subtitle sidecars sharing its basename stem must
+    yield a single RenameOp whose ``sidecars`` list contains target
+    paths that share the canonical Plex stem the video lands on. Pins
+    that the parser pairs the sidecars by stem and the planner emits
+    one target per sidecar with the show/season/episode-derived stem.
+    """
+    root = tmp_path / "MAX"
+    root.mkdir()
+    show = root / "Game Of Thrones" / "s1"
+    show.mkdir(parents=True)
+    # NOTE: the parser pairs sidecars by basename stem; bracketed
+    # filenames like ``[S01.E01] ...`` have internal periods that
+    # confuse the language/modifier tokenizer. Use a period-free shape
+    # so the pairing logic exercised here is the planner's, not the
+    # parser's stem heuristic.
+    video = show / "Game of Thrones S01E01 Winter Is Coming.mp4"
+    video.touch()
+    (show / "Game of Thrones S01E01 Winter Is Coming.en.srt").touch()
+    (show / "Game of Thrones S01E01 Winter Is Coming.en.forced.srt").touch()
+    (show / "Game of Thrones S01E01 Winter Is Coming.en.sdh.srt").touch()
+
+    settings = make_test_settings(tmp_path)
+    orchestrator, model = make_orchestrator(settings, tmdb=mock_tmdb, tmp_path=tmp_path)
+    orchestrator.parse_and_resolve(root)
+    plan = orchestrator.preview(model, input_root=root)
+
+    assert len(plan.ops) == 1, [op.target for op in plan.ops]
+    op = plan.ops[0]
+    sidecar_targets = [str(target) for _, target in op.sidecars]
+    assert any(t.endswith(".en.srt") for t in sidecar_targets), sidecar_targets
+    assert any(t.endswith(".en.forced.srt") for t in sidecar_targets), sidecar_targets
+    assert any(t.endswith(".en.sdh.srt") for t in sidecar_targets), sidecar_targets
+    # Every sidecar shares the canonical Plex episode stem.
+    canonical_stem = "Game of Thrones (2011) - S01E01 - Winter Is Coming"
+    for t in sidecar_targets:
+        assert canonical_stem in t, t
+
+
+def test_specials_route_to_season_00(tmp_path, qapp, mock_tmdb) -> None:
+    """Files under ``Specials/`` (or with an S00 marker) land in ``Season 00/``.
+
+    The corpus generator emits Doctor Who specials under
+    ``Doctor Who/Specials/``; the parser's parent-hint logic sets
+    ``season=0`` from the folder name and the planner must route the
+    file under ``Season 00/`` (not ``Season 0`` or ``Specials`` —
+    Plex's canonical folder name is ``Season 00``).
+    """
+    root = tmp_path / "MAX"
+    root.mkdir()
+    show = root / "Doctor Who" / "Specials"
+    show.mkdir(parents=True)
+    (show / "S00E01 - Time Crash.mp4").touch()
+
+    settings = make_test_settings(tmp_path)
+    orchestrator, model = make_orchestrator(settings, tmdb=mock_tmdb, tmp_path=tmp_path)
+    orchestrator.parse_and_resolve(root)
+    plan = orchestrator.preview(model, input_root=root)
+
+    assert len(plan.ops) == 1, [op.target for op in plan.ops]
+    op = plan.ops[0]
+    assert "Season 00" in str(op.target), f"Special did not route to Season 00: {op.target}"
+
+
+def test_multi_season_drop_hydrates_each_season(tmp_path, qapp, mock_tmdb) -> None:
+    """When a group spans multiple seasons, every season's episode_list is merged.
+
+    Pins the round-2 fix in :meth:`Orchestrator._hydrate_seasons`:
+    before the fix, only the first row's season was hydrated, so
+    rows in higher seasons carried a Candidate whose ``episode_list``
+    didn't include their season's episodes. After the fix, the merged
+    Candidate's ``episode_list`` spans every unique season present in
+    the group.
+    """
+    root = tmp_path / "MAX"
+    root.mkdir()
+    show_dir = root / "Game Of Thrones"
+    show_dir.mkdir()
+    (show_dir / "s1").mkdir()
+    (show_dir / "s2").mkdir()
+    (show_dir / "s1" / "[S01.E01] Winter Is Coming.mp4").touch()
+    (show_dir / "s2" / "[S02.E01] The North Remembers.mp4").touch()
+
+    settings = make_test_settings(tmp_path)
+    orchestrator, _model = make_orchestrator(settings, tmdb=mock_tmdb, tmp_path=tmp_path)
+    rows = orchestrator.parse_and_resolve(root)
+
+    assert len(rows) == 2
+    for r in rows:
+        assert r.candidate is not None, f"{r.parsed.raw_filename} stayed unresolved"
+        eps = r.candidate.episode_list or ()
+        assert any(e.season == 1 for e in eps), (
+            f"s1 episodes missing from hydrated list for {r.parsed.raw_filename}"
+        )
+        assert any(e.season == 2 for e in eps), (
+            f"s2 episodes missing from hydrated list for {r.parsed.raw_filename}"
+        )
+
+
+def test_resolve_errors_cleared_on_success(tmp_path, qapp, mock_tmdb) -> None:
+    """A successful re-resolve clears stale per-path errors.
+
+    Pins the dict-keyed error state in
+    :attr:`Orchestrator._resolve_errors_by_path`: when a prior call
+    surfaced an error for a path, a subsequent successful resolve for
+    that path drops the entry instead of leaving it stale.
+    """
+    root = tmp_path / "MAX"
+    show_dir = root / "Game Of Thrones" / "s1"
+    show_dir.mkdir(parents=True)
+    video = show_dir / "[S01.E01] Winter Is Coming.mp4"
+    video.touch()
+
+    settings = make_test_settings(tmp_path)
+    orchestrator, _model = make_orchestrator(settings, tmdb=mock_tmdb, tmp_path=tmp_path)
+    rows = orchestrator.parse_and_resolve(root)
+    assert len(rows) == 1
+    # Seed a stale error against the row's path and verify the next
+    # resolve pass clears it (the successful path drops the entry).
+    orchestrator._resolve_errors_by_path[rows[0].source_path] = "stale error from earlier pass"
+    assert orchestrator.last_resolve_errors(), "seeded error should be visible"
+
+    orchestrator.resolve_rows(rows)
+    remaining = {p for p, _ in orchestrator.last_resolve_errors()}
+    assert rows[0].source_path not in remaining, (
+        "Successful resolve_rows should clear stale errors for the affected paths"
+    )

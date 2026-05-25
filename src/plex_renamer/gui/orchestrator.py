@@ -140,11 +140,13 @@ class Orchestrator(QObject):
         # The currently-open picker, if any. We hold a reference so the
         # picker isn't garbage-collected while the user interacts.
         self._open_picker: ShowAnchorPicker | None = None
-        # Per-row resolver errors from the most recent resolve pass.
-        # Emitted on ``resolve_errors_changed`` so the run-report
-        # surfaces them; absent that subscription, tests can read this
-        # directly.
-        self._last_resolve_errors: list[tuple[Path, str]] = []
+        # Per-source-path resolver errors, keyed so each public resolver
+        # entry point can clear only the paths it touches before
+        # attempting the work. The dict is rendered to a list and
+        # emitted on ``resolve_errors_changed`` so the run-report
+        # surfaces failures; absent that subscription, tests read via
+        # :meth:`last_resolve_errors`.
+        self._resolve_errors_by_path: dict[Path, str] = {}
 
     # ----- Wiring ---------------------------------------------------------
 
@@ -204,11 +206,17 @@ class Orchestrator(QObject):
 
         Failures don't abort the loop; an unresolved row stays without
         a candidate and lands as "unresolved" in the UI. Each failure
-        is captured in ``_last_resolve_errors`` and emitted via
+        is recorded against the affected source path in
+        ``_resolve_errors_by_path`` and the full dict is emitted via
         ``resolve_errors_changed`` so the run-report surfaces them
         instead of letting them disappear into a swallowed except clause.
+        Any prior error attached to one of THESE rows is cleared at the
+        start so a successful re-resolve doesn't leave stale messages.
         """
-        errors: list[tuple[Path, str]] = []
+        # Clear stale errors for every path this pass touches so a
+        # success leaves no residue from a prior failed resolve.
+        for r in rows:
+            self._resolve_errors_by_path.pop(r.source_path, None)
 
         movie_rows = [r for r in rows if r.parsed.kind == "movie"]
         tv_rows = [r for r in rows if r.parsed.kind == "tv"]
@@ -216,14 +224,20 @@ class Orchestrator(QObject):
         # ----- Movies: per-row -------------------------------------------
         for row in movie_rows:
             parsed = row.parsed
+            query = parsed.title_candidate or ""
             try:
-                candidate = self._deps.resolver.resolve_movie(
-                    parsed.title_candidate or "", parsed.year
-                )
+                candidate = self._deps.resolver.resolve_movie(query, parsed.year)
             except Exception as exc:
-                errors.append((row.source_path, f"resolve_movie failed: {exc}"))
+                self._resolve_errors_by_path[row.source_path] = f"resolve_movie failed: {exc}"
                 continue
             if candidate is None:
+                # No candidate found is itself a surfaced failure: a
+                # silent "no match" gets the user no signal at all,
+                # which is the bug the round-2 review caught. Record
+                # the miss against the row so the Errors pane shows it.
+                self._resolve_errors_by_path[row.source_path] = (
+                    f"no candidate matched movie query {query!r}"
+                )
                 continue
             self._model.set_candidate(row.source_path, candidate)
 
@@ -239,31 +253,34 @@ class Orchestrator(QObject):
                 candidate = self._deps.resolver.resolve_tv(show_name, first.parsed.year)
             except Exception as exc:
                 for r in group_rows:
-                    errors.append((r.source_path, f"resolve_tv failed: {exc}"))
+                    self._resolve_errors_by_path[r.source_path] = f"resolve_tv failed: {exc}"
                 continue
             if candidate is None:
+                # Surface the miss against every row in the group so
+                # the user sees that the show search produced nothing
+                # — silent unresolved was the round-2 bug.
+                for r in group_rows:
+                    self._resolve_errors_by_path[r.source_path] = (
+                        f"no candidate matched TV query {show_name!r}"
+                    )
                 continue
-            # Hydrate ONCE per unique season in the group when the
-            # candidate is TMDB-anchored. Each hydrated candidate is
-            # cached by season so we don't refetch for repeat seasons.
-            hydrated_by_season: dict[int | None, Candidate] = {}
+            # Hydrate the union of unique seasons in this group so a
+            # multi-season drop (Show/s1/ + Show/s2/) merges both
+            # season's episode_list into a single Candidate. Every row
+            # in the group then carries the same merged Candidate; the
+            # downstream planner disambiguates by (season, episode) on
+            # each Episode entry.
+            if candidate.anchor_kind == "tmdb":
+                seasons = {r.parsed.season for r in group_rows if r.parsed.season is not None}
+                merged = self._hydrate_seasons(candidate, seasons, group_rows)
+            else:
+                merged = candidate
             for r in group_rows:
-                season_key = r.parsed.season
-                if candidate.anchor_kind == "tmdb":
-                    if season_key not in hydrated_by_season:
-                        hydrated_by_season[season_key] = self._hydrate_tv_season(
-                            candidate, season_key
-                        )
-                    row_candidate = hydrated_by_season[season_key]
-                else:
-                    row_candidate = candidate
-                self._model.set_candidate(r.source_path, row_candidate)
+                self._model.set_candidate(r.source_path, merged)
 
-        # Stash + surface errors. Always emit, even when empty, so a
-        # successful resolve pass clears any prior error state on the
-        # UI.
-        self._last_resolve_errors = errors
-        self.resolve_errors_changed.emit(list(errors))
+        # Always emit so a successful resolve pass clears any prior
+        # error state on the UI even when there are no current errors.
+        self.resolve_errors_changed.emit(self._errors_snapshot())
 
     def parse_and_resolve(self, input_root: Path) -> list[ItemRow]:
         """Convenience: parse + filter + resolve in one call.
@@ -291,12 +308,21 @@ class Orchestrator(QObject):
         self.resolve_rows(rows)
         return rows
 
-    def _hydrate_tv_season(self, candidate: Candidate, season_hint: int | None) -> Candidate:
+    def _hydrate_tv_season(
+        self,
+        candidate: Candidate,
+        season_hint: int | None,
+        affected_rows: list[ItemRow] | None = None,
+    ) -> Candidate:
         """Fetch season episodes for a TMDB-anchored TV candidate.
 
         Returns a NEW Candidate with the populated ``episode_list``. Any
-        TMDB error short-circuits to returning the original candidate
-        unchanged — the planner falls back to filename hints downstream.
+        TMDB error is recorded against every row in ``affected_rows`` (so
+        the Errors pane surfaces the failure) and the original candidate
+        is returned unchanged — the planner falls back to filename hints
+        downstream. The caller is expected to emit
+        ``resolve_errors_changed`` after the hydrate pass so the recorded
+        failures reach the UI.
         """
         season = season_hint if season_hint is not None else 1
         try:
@@ -305,7 +331,12 @@ class Orchestrator(QObject):
             return candidate
         try:
             episodes = self._deps.tmdb.get_season(tmdb_id, season)
-        except Exception:
+        except Exception as exc:
+            if affected_rows:
+                for r in affected_rows:
+                    self._resolve_errors_by_path[r.source_path] = (
+                        f"get_season(season={season}) failed: {exc}"
+                    )
             return candidate
         if not episodes:
             return candidate
@@ -318,6 +349,58 @@ class Orchestrator(QObject):
             confidence=candidate.confidence,
             episode_list=tuple(episodes),
         )
+
+    def _hydrate_seasons(
+        self,
+        candidate: Candidate,
+        seasons: set[int],
+        affected_rows: list[ItemRow],
+    ) -> Candidate:
+        """Merge episode lists for every season in ``seasons`` into one Candidate.
+
+        Returns a NEW Candidate whose ``episode_list`` is the union of
+        each season's episodes, sorted by ``(season, episode)`` so
+        downstream title-fuzzy matching has the full multi-season list.
+        Falls back to single-season hydration (season 1) when
+        ``seasons`` is empty. Per-season failures are recorded against
+        ``affected_rows`` via :meth:`_hydrate_tv_season`; the merge
+        proceeds with whatever episodes did come back.
+        """
+        if not seasons:
+            return self._hydrate_tv_season(candidate, None, affected_rows)
+
+        merged: list[Episode] = []
+        for season in sorted(seasons):
+            hydrated = self._hydrate_tv_season(candidate, season, affected_rows)
+            if hydrated.episode_list:
+                merged.extend(hydrated.episode_list)
+
+        if not merged:
+            return candidate
+
+        merged.sort(key=lambda e: (e.season, e.episode))
+        return Candidate(
+            anchor_kind=candidate.anchor_kind,
+            anchor_id=candidate.anchor_id,
+            kind=candidate.kind,
+            title=candidate.title,
+            year=candidate.year,
+            confidence=candidate.confidence,
+            episode_list=tuple(merged),
+        )
+
+    def last_resolve_errors(self) -> list[tuple[Path, str]]:
+        """Return the current per-path resolver errors as a list.
+
+        Snapshot of ``_resolve_errors_by_path``: ``[(path, message),
+        ...]`` in insertion order. Tests inspect this without needing to
+        subscribe to ``resolve_errors_changed``.
+        """
+        return self._errors_snapshot()
+
+    def _errors_snapshot(self) -> list[tuple[Path, str]]:
+        """Internal helper: convert the dict to a list for emission/inspection."""
+        return [(p, msg) for p, msg in self._resolve_errors_by_path.items()]
 
     # ----- Signal handlers ------------------------------------------------
 
@@ -367,10 +450,15 @@ class Orchestrator(QObject):
             edit_pane.set_tmdb_results(source_path, candidates)
 
     def on_imdb_resolve(self, source_path: Path, imdb_id: str) -> None:
-        """Resolve an IMDb tt-id to a Candidate and store it on the row."""
+        """Resolve an IMDb tt-id to a Candidate and store it on the row.
+
+        Clears any prior error attached to ``source_path`` at the start
+        so a successful re-resolve doesn't leave stale messages showing.
+        """
         row = self._model.row_for(source_path)
         if row is None:
             return
+        self._resolve_errors_by_path.pop(source_path, None)
         try:
             hit = self._deps.tmdb.find_by_imdb_id(imdb_id)
         except Exception:
@@ -405,8 +493,9 @@ class Orchestrator(QObject):
                 year=hit.year,
                 confidence=0.8,
             )
-            candidate = self._hydrate_tv_season(candidate, row.parsed.season)
+            candidate = self._hydrate_tv_season(candidate, row.parsed.season, [row])
         self._model.set_candidate(source_path, candidate)
+        self.resolve_errors_changed.emit(self._errors_snapshot())
 
     def on_group_clicked(self, group_key: str) -> None:
         """Open the show-anchor picker for the group, populate TMDB results.
@@ -419,22 +508,30 @@ class Orchestrator(QObject):
         episode title sits in ``episode_title``). Searching TMDB with
         the episode title produces zero or wrong hits; searching with
         the show name is what the user expects.
+
+        Any prior error attached to one of the affected rows is cleared
+        at the start so a successful re-search doesn't leave stale
+        messages in the Errors pane.
         """
         rows = self._rows_in_group(group_key)
         if not rows:
             return
+        # Clear stale errors for every path this call touches before
+        # attempting the search; re-emit the dict whether the search
+        # succeeds or fails.
+        for r in rows:
+            self._resolve_errors_by_path.pop(r.source_path, None)
+
         first = rows[0]
         title_hint = first.show_name_hint or first.parsed.title_candidate or ""
         year_hint = first.parsed.year
-        errors: list[tuple[Path, str]] = []
         try:
             shows = self._deps.tmdb.search_tv(title_hint, year_hint)
         except Exception as exc:
             shows = []
             for r in rows:
-                errors.append((r.source_path, f"search_tv failed: {exc}"))
-            self._last_resolve_errors = errors
-            self.resolve_errors_changed.emit(list(errors))
+                self._resolve_errors_by_path[r.source_path] = f"search_tv failed: {exc}"
+        self.resolve_errors_changed.emit(self._errors_snapshot())
         candidates = [
             Candidate(
                 anchor_kind="tmdb",
@@ -455,17 +552,29 @@ class Orchestrator(QObject):
     def on_show_chosen(self, group_key: str, candidate: Candidate) -> None:
         """Apply the picked show to every row in the group.
 
-        After the user picks a show, fetch the relevant season once and
-        push the hydrated candidate onto every row in the group so the
-        planner has the episode list it needs to match by title.
+        After the user picks a show, fetch the relevant seasons (every
+        unique season present in the group) and push the merged
+        candidate onto every row in the group so the planner has the
+        full episode list it needs to match by title — multi-season
+        drops are common (``Show/s1/`` + ``Show/s2/``) and a single-
+        season hydration would leave higher-season rows without their
+        episode_list.
+
+        Any prior error attached to a row in this group is cleared
+        before the hydration pass so a successful re-pick doesn't leave
+        stale messages showing.
         """
         rows = self._rows_in_group(group_key)
         if not rows:
             return
-        season_hint = rows[0].parsed.season
-        hydrated = self._hydrate_tv_season(candidate, season_hint)
+        for r in rows:
+            self._resolve_errors_by_path.pop(r.source_path, None)
+
+        seasons = {r.parsed.season for r in rows if r.parsed.season is not None}
+        hydrated = self._hydrate_seasons(candidate, seasons, rows)
         for row in rows:
             self._model.set_candidate(row.source_path, hydrated)
+        self.resolve_errors_changed.emit(self._errors_snapshot())
         self._open_picker = None
 
     def on_reanchor_requested(self, target: Path) -> None:
