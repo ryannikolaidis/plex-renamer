@@ -109,7 +109,13 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("plex-renamer")
-        self.setMinimumSize(1100, 700)
+        # Minimum height bumped from 700 -> 900 so the edit pane (which
+        # needs ~600-700px of vertical room to render the TMDB search
+        # panel + IMDb override + Manual override at their natural
+        # sizes) doesn't get squeezed below its children's sizeHints
+        # on a fresh launch. The previous 700px floor visibly crushed
+        # the TMDB search results list to a couple of rows.
+        self.setMinimumSize(1100, 900)
         # Default window geometry. The minimum keeps the layout
         # functional on small screens; the resize gives the right pane
         # enough room not to clip the run-report's Errors list and the
@@ -193,12 +199,29 @@ class MainWindow(QMainWindow):
         panels.setSizes([700, 700])
 
         # Right side: edit pane stacked above collision review and run
-        # report. We use a splitter so the user can resize.
+        # report. We use a splitter so the user can resize. The edit
+        # pane hosts the TMDB search panel + IMDb / Manual override
+        # boxes; collectively those widgets need ~600px of vertical
+        # space to render at their natural sizes. The collision
+        # review and run report widgets ship with large
+        # ``minimumSizeHint`` values (their child lists / forms add
+        # up to 200+ pixels each), which previously starved the edit
+        # pane to ~350px on first show and crushed the TMDB search
+        # results list. Cap their MAXIMUM heights so the splitter
+        # apportions the slack to the edit pane; the user can still
+        # see content in those widgets when they're populated, and
+        # the cap doesn't restrict the run report's scroll regions.
+        self._collision_review.setMaximumHeight(140)
+        self._run_report.setMaximumHeight(180)
         side = QSplitter()
         side.setOrientation(Qt.Orientation.Vertical)
         side.addWidget(self._edit_pane)
         side.addWidget(self._collision_review)
         side.addWidget(self._run_report)
+        side.setStretchFactor(0, 6)
+        side.setStretchFactor(1, 1)
+        side.setStretchFactor(2, 2)
+        self._side_splitter = side
 
         # Body splitter: panels on the left, side on the right.
         body = QSplitter()
@@ -231,6 +254,30 @@ class MainWindow(QMainWindow):
         layout.addLayout(roots_row)
         layout.addLayout(bottom)
         self.setCentralWidget(central)
+
+    def showEvent(self, event):  # noqa: N802 — Qt override
+        """Apply the side splitter's initial sizes after layout is realized.
+
+        ``QSplitter.setSizes`` only honors its argument once the splitter
+        has been polished and shown; calling it from ``_build_layout``
+        before the widgets are realized has no effect (Qt rebalances
+        on the first show event). We bias the side splitter so the
+        edit pane gets the dominant share — without this, the TMDB
+        search list gets crushed below the rendered height needed to
+        display search results.
+        """
+        super().showEvent(event)
+        total = self._side_splitter.height()
+        if total <= 0:
+            return
+        # Give the edit pane roughly 70% of the vertical space, the
+        # collision review 12%, and the run report 18%. Computed from
+        # the actual realized height so it adapts when the user
+        # resizes the window.
+        edit_h = int(total * 0.70)
+        coll_h = int(total * 0.12)
+        run_h = total - edit_h - coll_h
+        self._side_splitter.setSizes([edit_h, coll_h, run_h])
 
     # ----- Drop handling --------------------------------------------------
 

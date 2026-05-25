@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QRadioButton,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -87,6 +88,14 @@ class EditPane(QWidget):
         self._anchor_tmdb.toggled.connect(self._on_anchor_toggled)
 
         imdb_box = QGroupBox("IMDb override")
+        # Lock the override box to its natural content height. The
+        # default Preferred/Preferred policy lets QVBoxLayout grow the
+        # box up to its sizeHint, which then competes with the TMDB
+        # search panel above for the stretch budget and crushes the
+        # search-results list to a few pixels. Fixed vertical policy
+        # makes the box use exactly its sizeHint and yield every
+        # surplus pixel to widgets above with Expanding policy.
+        imdb_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         imdb_layout = QFormLayout(imdb_box)
         imdb_row = QHBoxLayout()
         imdb_row.addWidget(self._imdb_input)
@@ -114,6 +123,11 @@ class EditPane(QWidget):
         self._apply_overrides_btn.clicked.connect(self._on_apply_overrides)
 
         manual_box = QGroupBox("Manual override")
+        # Same rationale as the IMDb box: Fixed vertical policy locks
+        # the box to its sizeHint so the TMDB search panel above
+        # claims the QVBoxLayout's stretch budget instead of fighting
+        # the override box for an even share.
+        manual_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         manual_layout = QFormLayout(manual_box)
         manual_layout.addRow("Title:", self._manual_title)
         manual_layout.addRow("Year:", self._manual_year)
@@ -129,12 +143,18 @@ class EditPane(QWidget):
         self._commit_btn = QPushButton("Done")
         self._commit_btn.clicked.connect(self._on_commit)
 
+        # Keep references on the instance so tests can read the actual
+        # rendered heights and assert the layout is not crushed.
+        self._imdb_box = imdb_box
+        self._manual_box = manual_box
+
         layout = QVBoxLayout(self)
         layout.addWidget(self._title_label)
         # Give the TMDB search panel a stretch factor so it gets the
         # vertical room it needs when the edit pane is the dock-like
-        # right-hand widget; without the factor, the IMDb and Manual
-        # group boxes consume the slack and squish the search panel.
+        # right-hand widget. The IMDb and Manual boxes above use a
+        # Maximum vertical size policy (set when they were constructed)
+        # so they don't compete for the stretch budget.
         layout.addWidget(self._tmdb_panel, stretch=1)
         layout.addWidget(imdb_box)
         layout.addWidget(manual_box)
@@ -238,6 +258,24 @@ class EditPane(QWidget):
         if self._current_path is None:
             return
         self.edit_committed.emit(self._current_path)
+
+    # ----- Test accessors ------------------------------------------------
+
+    def tmdb_panel(self) -> TMDBSearchPanel:
+        """Return the inner :class:`TMDBSearchPanel`.
+
+        Used by integration tests that need to inspect the rendered
+        height of the search panel after layout (Bug B regression gate).
+        """
+        return self._tmdb_panel
+
+    def imdb_box(self) -> QGroupBox:
+        """Return the IMDb override group box."""
+        return self._imdb_box
+
+    def manual_box(self) -> QGroupBox:
+        """Return the manual override group box."""
+        return self._manual_box
 
 
 __all__ = ["EditPane"]

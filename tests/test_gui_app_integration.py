@@ -71,7 +71,7 @@ def _build_window_with_real_wiring(tmp_path: Path, gui_settings):
         journal_dir=tmp_path / "journals",
         cleanup_enabled=False,
     )
-    window = build_window(gui_settings, deps)
+    window, _orchestrator = build_window(gui_settings, deps)
     return window, tmdb
 
 

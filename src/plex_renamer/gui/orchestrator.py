@@ -40,6 +40,7 @@ from plex_renamer.parser.models import ParseResult
 from plex_renamer.planner.build import build_plan_from_pairs
 from plex_renamer.tmdb.fallback import IMDbFallbackResolver
 from plex_renamer.tmdb.models import Candidate, Episode, MovieResult, TVResult
+from plex_renamer.tmdb.ranking import cleaned_query_variants, rank_candidates
 
 # Matches a directory name that looks like a season folder, not a show
 # name. ``s1``, ``S01``, ``Season 5``, ``Series 2``, ``Specials`` are all
@@ -543,13 +544,57 @@ class Orchestrator(QObject):
             )
             for s in shows
         ]
+        # Local relevance re-rank so exact / prefix matches outrank
+        # TMDB's default popularity order. The user typing "Lazarus"
+        # expects the exact title first, not "The Lazarus Project".
+        candidates = rank_candidates(title_hint, candidates)
+
+        # Fuzzy fallback: when the auto-seeded query produced nothing,
+        # walk the cleaned variants (strip trailing _N, parenthesized
+        # suffixes, leading "The ") until one returns results. The
+        # picker surfaces a notice naming the variant that succeeded so
+        # the user understands why the search box shows a different
+        # query than the folder name.
+        fallback_original: str | None = None
+        fallback_used: str | None = None
+        search_box_query = title_hint
+        if not candidates:
+            for variant in cleaned_query_variants(title_hint)[1:]:
+                try:
+                    retry_shows = self._deps.tmdb.search_tv(variant, None)
+                except Exception:
+                    retry_shows = []
+                if retry_shows:
+                    retry_candidates = [
+                        Candidate(
+                            anchor_kind="tmdb",
+                            anchor_id=str(s.tmdb_id),
+                            kind="tv",
+                            title=s.title,
+                            year=s.year,
+                            confidence=0.7,
+                        )
+                        for s in retry_shows
+                    ]
+                    candidates = rank_candidates(variant, retry_candidates)
+                    fallback_original = title_hint
+                    fallback_used = variant
+                    search_box_query = variant
+                    break
+
         picker = self._deps.picker_factory(group_key)
         # Pre-populate the search box with the show name hint so the user
         # sees what the auto-seed query was, and can edit it directly
-        # when the seeded results don't include the right show.
+        # when the seeded results don't include the right show. When a
+        # fallback fired, show the cleaned variant in the box instead so
+        # it matches what actually produced the results.
         if hasattr(picker, "set_search_text"):
-            picker.set_search_text(title_hint)
+            picker.set_search_text(search_box_query)
         picker.set_results(candidates)
+        if fallback_used is not None and hasattr(picker, "set_fallback_notice"):
+            picker.set_fallback_notice(fallback_original or "", fallback_used)
+        elif hasattr(picker, "set_fallback_notice"):
+            picker.set_fallback_notice("", "")
         picker.show_chosen.connect(self.on_show_chosen)
         # Hook up the picker's interactive search box. When the user
         # types a different query, we re-fire TMDB and push results
@@ -591,7 +636,14 @@ class Orchestrator(QObject):
             )
             for s in shows
         ]
+        # Same relevance re-rank as the auto-seed path so the user's
+        # typed query is ranked by query-relevance, not TMDB popularity.
+        candidates = rank_candidates(query, candidates)
         if self._open_picker is not None and self._open_picker.group_key() == group_key:
+            # User-driven search: their query is authoritative; clear
+            # any auto-seed fallback notice from the prior render.
+            if hasattr(self._open_picker, "set_fallback_notice"):
+                self._open_picker.set_fallback_notice("", "")
             self._open_picker.set_results(candidates)
 
     def on_show_chosen(self, group_key: str, candidate: Candidate) -> None:
@@ -673,6 +725,15 @@ class Orchestrator(QObject):
                 continue
             root = input_root if input_root is not None else row.parsed.source_path.parent
             row.show_name_hint = derive_show_name(root, row.parsed.parent_dirs)
+        # The drop handler emitted ``rows_reset`` BEFORE this backfill,
+        # so the source panel rendered group labels with the stale (None)
+        # show_name_hint -- a TV row whose only show name lives on a
+        # parent dir shows the episode title as the group label. Force a
+        # rebuild now that the hints exist. If TMDB resolution succeeds
+        # the subsequent ``set_candidate`` calls will trigger another
+        # row-level refresh; if resolution fails, the rebuild here is the
+        # only chance the panel has to display the correct group label.
+        self._model.notify_rows_reset()
         self.resolve_rows(rows)
 
     def _build_plan_from_model(

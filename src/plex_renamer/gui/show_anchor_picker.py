@@ -74,6 +74,17 @@ class ShowAnchorPicker(QDialog):
         self._empty_label.setVisible(False)
         self._empty_label.setAccessibleName("show-anchor-picker-empty")
 
+        # Notice label for the fuzzy fallback case. When the auto-seeded
+        # query produced zero results and the orchestrator retried with
+        # a cleaned variant, this label tells the user what was actually
+        # searched so they don't wonder why the result list disagrees
+        # with the search box's initial content.
+        self._fallback_notice = QLabel("")
+        self._fallback_notice.setVisible(False)
+        self._fallback_notice.setAccessibleName("show-anchor-picker-fallback-notice")
+        self._fallback_notice.setStyleSheet("color: #8a6d3b; font-style: italic;")
+        self._fallback_notice.setWordWrap(True)
+
         self._results = QListWidget()
         self._results.itemSelectionChanged.connect(self._on_selection_changed)
         self._results.itemDoubleClicked.connect(lambda _item: self._emit_chosen())
@@ -84,6 +95,7 @@ class ShowAnchorPicker(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addLayout(search_row)
+        layout.addWidget(self._fallback_notice)
         layout.addWidget(self._empty_label)
         layout.addWidget(self._results)
         layout.addWidget(self._use_btn)
@@ -141,6 +153,51 @@ class ShowAnchorPicker(QDialog):
         if not query:
             return
         self.search_requested.emit(self._group_key, query)
+
+    def set_fallback_notice(self, original: str, used: str) -> None:
+        """Show or hide the fuzzy-fallback notice label.
+
+        Called by the orchestrator when the auto-seeded query returned
+        zero results AND a cleaned variant did return results. Passing
+        empty strings hides the label (the normal case).
+        """
+        if original and used:
+            self._fallback_notice.setText(
+                f"No matches for {original!r} — showing results for {used!r}"
+            )
+            self._fallback_notice.setVisible(True)
+        else:
+            self._fallback_notice.setText("")
+            self._fallback_notice.setVisible(False)
+
+    def fallback_notice_text(self) -> str:
+        """Return the current text of the fallback notice (empty if hidden)."""
+        return self._fallback_notice.text()
+
+    def empty_hint_text(self) -> str:
+        """Return the empty-results hint text (empty when results exist)."""
+        return self._empty_label.text()
+
+    def has_results(self) -> bool:
+        """Return True if at least one candidate is loaded into the list."""
+        return bool(self._candidates)
+
+    def candidates(self) -> list[Candidate]:
+        """Return the current ordered candidate list."""
+        return list(self._candidates)
+
+    def select_result(self, index: int) -> None:
+        """Programmatically select a row by index. No-op on out-of-range."""
+        if 0 <= index < len(self._candidates):
+            self._results.setCurrentRow(index)
+
+    def trigger_pick(self) -> None:
+        """Programmatically click "Pick this show".
+
+        Tests use this to drive the choose flow without a synthetic
+        click. A no-op when nothing is selected.
+        """
+        self._emit_chosen()
 
     # ----- Signal handlers ------------------------------------------------
 

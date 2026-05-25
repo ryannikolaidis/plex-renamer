@@ -212,7 +212,7 @@ def make_window_with_orchestrator(settings, *, tmdb: FakeTMDB, tmp_path: Path):
         journal_dir=tmp_path / "journals",
         cleanup_enabled=False,
     )
-    window = build_window(settings, deps)
+    window, _orchestrator = build_window(settings, deps)
     return window
 
 
