@@ -71,3 +71,16 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: uv run pytest -v
+
+      - name: Build engine sidecar (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          uv run pyinstaller packaging/windows/plex-renamer-engined.spec --noconfirm
+          # Smoke: pipe a single get_settings request and assert the
+          # daemon emits one non-error response line. If the spec is
+          # broken (missing hidden imports, wrong entry point) this
+          # fails here rather than three slices later.
+          echo '{"jsonrpc":"2.0","id":1,"method":"get_settings","params":{}}' \
+            | ./dist/plex-renamer-engined/plex-renamer-engined.exe \
+            | python -c 'import sys, json; r = json.loads(sys.stdin.readline()); assert r["id"] == 1 and "result" in r, r; print("daemon smoke OK")'

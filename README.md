@@ -40,6 +40,14 @@ uv run plex-renamer apply --plan plan.json
 uv run plex-renamer undo --journal <journal>.json
 ```
 
+Run the engine sidecar (the long-running JSON-RPC daemon that future native shells talk to):
+
+```
+uv run plex-renamer-engined
+```
+
+The daemon reads newline-delimited JSON-RPC 2.0 requests on stdin and writes responses to stdout. See [`docs/win-native-bridge.md`](docs/win-native-bridge.md) for the protocol specification.
+
 ## Build
 
 Local builds are driven by the per-OS PyInstaller specs under `packaging/`. Each spec produces both a CLI bundle and a GUI bundle so the same artifact set works for power users (CLI) and end users (GUI).

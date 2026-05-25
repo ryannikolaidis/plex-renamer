@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 plex-renamer = "plex_renamer.cli.main:app"
+plex-renamer-engined = "plex_renamer.daemon.server:main"
 
 [project.gui-scripts]
 plex-renamer-gui = "plex_renamer.gui.app:main"
