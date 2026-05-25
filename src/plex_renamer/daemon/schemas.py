@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, TypedDict
 
-from plex_renamer.parser.models import ParseResult, SkipReason
+from plex_renamer.parser.models import ParseResult, Sidecar, SkipReason
 from plex_renamer.planner.models import Collision, RenameOp, RenamePlan
 from plex_renamer.tmdb.models import Candidate, Episode, MovieResult, TVResult
 
@@ -45,6 +45,20 @@ class EpisodeDict(TypedDict):
     air_date: str | None
 
 
+class SidecarDict(TypedDict, total=False):
+    """JSON shape of :class:`plex_renamer.parser.models.Sidecar`.
+
+    Pairings the parser found between a video and adjacent subtitle / NFO /
+    artwork files. The planner consumes these to rename sidecars alongside
+    their video, so the wire shape MUST round-trip them through any shell.
+    """
+
+    path: str
+    kind: str  # "subtitle" | "nfo" | "artwork"
+    language: str | None
+    modifiers: list[str]
+
+
 class ParseResultDict(TypedDict, total=False):
     """JSON shape of :class:`plex_renamer.parser.models.ParseResult`."""
 
@@ -63,6 +77,7 @@ class ParseResultDict(TypedDict, total=False):
     raw_filename: str
     parent_dirs: list[str]
     skip_reason: dict[str, str] | None
+    sidecars: list[SidecarDict]
 
 
 class RowDict(TypedDict, total=False):
@@ -210,6 +225,15 @@ def skip_reason_to_dict(s: SkipReason | None) -> dict[str, str] | None:
     return {"reason": s.reason, "detail": s.detail}
 
 
+def sidecar_to_dict(sc: Sidecar) -> SidecarDict:
+    return {
+        "path": str(sc.path),
+        "kind": sc.kind,
+        "language": sc.language,
+        "modifiers": list(sc.modifiers),
+    }
+
+
 def parse_result_to_dict(p: ParseResult) -> ParseResultDict:
     return {
         "source_path": str(p.source_path),
@@ -227,6 +251,7 @@ def parse_result_to_dict(p: ParseResult) -> ParseResultDict:
         "raw_filename": p.raw_filename,
         "parent_dirs": list(p.parent_dirs),
         "skip_reason": skip_reason_to_dict(p.skip_reason),
+        "sidecars": [sidecar_to_dict(sc) for sc in p.sidecars],
     }
 
 
@@ -301,6 +326,15 @@ def skip_reason_from_dict(d: dict[str, Any] | None) -> SkipReason | None:
     return SkipReason(reason=d["reason"], detail=d.get("detail", ""))
 
 
+def sidecar_from_dict(d: dict[str, Any]) -> Sidecar:
+    return Sidecar(
+        path=Path(d["path"]),
+        kind=d.get("kind", "subtitle"),
+        language=d.get("language"),
+        modifiers=list(d.get("modifiers", [])),
+    )
+
+
 def parse_result_from_dict(d: dict[str, Any]) -> ParseResult:
     return ParseResult(
         source_path=Path(d["source_path"]),
@@ -318,6 +352,7 @@ def parse_result_from_dict(d: dict[str, Any]) -> ParseResult:
         raw_filename=d.get("raw_filename", ""),
         parent_dirs=list(d.get("parent_dirs", [])),
         skip_reason=skip_reason_from_dict(d.get("skip_reason")),
+        sidecars=[sidecar_from_dict(sc) for sc in d.get("sidecars", [])],
     )
 
 
@@ -404,6 +439,7 @@ __all__ = [
     "RenamePlanDict",
     "RowDict",
     "RunReportDict",
+    "SidecarDict",
     "UndoReportDict",
     "candidate_from_dict",
     "candidate_to_dict",
@@ -421,6 +457,8 @@ __all__ = [
     "rename_op_to_dict",
     "rename_plan_from_dict",
     "rename_plan_to_dict",
+    "sidecar_from_dict",
+    "sidecar_to_dict",
     "skip_reason_from_dict",
     "skip_reason_to_dict",
     "tv_result_to_candidate_dict",

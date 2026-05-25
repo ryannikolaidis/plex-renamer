@@ -229,6 +229,112 @@ def test_parse_inputs_returns_rows_and_groups(
     assert len(group_keys) == 1
 
 
+def test_parse_inputs_round_trips_sidecars(
+    fake_tmdb: FakeTMDB, daemon_config_dir: Path, tmp_path: Path
+) -> None:
+    """Sidecars the parser pairs with a video survive the JSON wire shape.
+
+    The planner consumes ``parsed.sidecars`` to rename subtitle / NFO /
+    artwork files alongside their video. If the wire shape dropped the
+    field, every paired sidecar would silently disappear from the rename
+    plan and INVARIANTS.md's "Sidecars and adjacent files" guarantee
+    would be broken on the daemon-driven shell. This test pins the
+    round-trip via a tree the parser actually pairs (a movie video next
+    to a ``poster.jpg`` artwork file).
+    """
+    movie_dir = tmp_path / "Foo (2020)"
+    movie_dir.mkdir()
+    (movie_dir / "Foo.2020.mkv").write_bytes(b"")
+    (movie_dir / "poster.jpg").write_bytes(b"")
+
+    response = _drive_one(
+        {
+            "jsonrpc": "2.0",
+            "id": 15,
+            "method": "parse_inputs",
+            "params": {"paths": [str(movie_dir)]},
+        }
+    )
+    rows = response["result"]["rows"]
+    video_rows = [r for r in rows if r["parsed"]["kind"] == "movie"]
+    assert len(video_rows) == 1
+    parsed = video_rows[0]["parsed"]
+    sidecars = parsed.get("sidecars")
+    # Must be present on the wire shape (not dropped by the encoder).
+    assert sidecars is not None, "parsed.sidecars MUST be in the wire shape"
+    # The artwork pairing the parser produces survives encoding.
+    artwork = [sc for sc in sidecars if sc["kind"] == "artwork"]
+    assert len(artwork) == 1
+    assert artwork[0]["path"].endswith("poster.jpg")
+    # Sidecar shape carries kind/language/modifiers fields per the protocol doc.
+    assert "language" in artwork[0]
+    assert "modifiers" in artwork[0]
+
+
+def test_sidecar_schema_round_trip() -> None:
+    """sidecar_to_dict / sidecar_from_dict are inverse operations.
+
+    The wire-shape contract is end-to-end: the daemon encodes a Sidecar to
+    JSON, the shell can either pass it back verbatim or reconstruct from
+    its POCO record. Either way, the daemon's decoder must accept what its
+    encoder produced.
+    """
+    from plex_renamer.daemon import schemas
+    from plex_renamer.parser.models import Sidecar
+
+    original = Sidecar(
+        path=Path("/abs/path/Foo.en.forced.srt"),
+        kind="subtitle",
+        language="en",
+        modifiers=["forced"],
+    )
+    encoded = schemas.sidecar_to_dict(original)
+    decoded = schemas.sidecar_from_dict(encoded)
+    assert decoded.path == original.path
+    assert decoded.kind == original.kind
+    assert decoded.language == original.language
+    assert decoded.modifiers == original.modifiers
+
+
+def test_parse_result_schema_round_trip_with_sidecars() -> None:
+    """parse_result_to_dict / parse_result_from_dict preserve sidecars.
+
+    Specifically pins the field that was dropped in the round-1 wire shape.
+    """
+    from plex_renamer.daemon import schemas
+    from plex_renamer.parser.models import ParseResult, Sidecar
+
+    original = ParseResult(
+        source_path=Path("/abs/Foo.2020.mkv"),
+        kind="movie",
+        title_candidate="Foo",
+        year=2020,
+        sidecars=[
+            Sidecar(
+                path=Path("/abs/Foo.2020.en.srt"),
+                kind="subtitle",
+                language="en",
+                modifiers=[],
+            ),
+            Sidecar(
+                path=Path("/abs/poster.jpg"),
+                kind="artwork",
+                language=None,
+                modifiers=[],
+            ),
+        ],
+    )
+    encoded = schemas.parse_result_to_dict(original)
+    assert "sidecars" in encoded
+    assert len(encoded["sidecars"]) == 2
+    decoded = schemas.parse_result_from_dict(encoded)
+    assert len(decoded.sidecars) == 2
+    decoded_subtitle = next(sc for sc in decoded.sidecars if sc.kind == "subtitle")
+    assert decoded_subtitle.language == "en"
+    decoded_artwork = next(sc for sc in decoded.sidecars if sc.kind == "artwork")
+    assert decoded_artwork.language is None
+
+
 def test_parse_and_resolve_runs_tmdb(
     fake_tmdb: FakeTMDB, daemon_config_dir: Path, tmp_path: Path
 ) -> None:

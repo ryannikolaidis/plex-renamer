@@ -77,11 +77,27 @@ Standard JSON-RPC 2.0 plus one local extension:
   "part_marker": null,
   "raw_filename": "Foo.Bar.2018.S01E04.Pilot.1080p.x264-RARBG.mkv",
   "parent_dirs": ["Foo Bar", "Season 1"],
-  "skip_reason": null
+  "skip_reason": null,
+  "sidecars": [<Sidecar>, ...]
 }
 ```
 
 `skip_reason` (when non-null): `{"reason": "<short>", "detail": "<long>"}`. Reasons: `not_a_media_file`, `in_progress_download`, `excluded_extension`.
+
+`sidecars` lists the subtitle / NFO / artwork files the parser paired with this video. The shell carries these through `parse_inputs` → `edit_row` → `build_plan` so the planner can rename sidecars alongside their video. Dropping the field on the wire silently loses every sidecar from the rename plan.
+
+### `Sidecar`
+
+```json
+{
+  "path": "/absolute/path/to/sidecar.srt",
+  "kind": "subtitle | nfo | artwork",
+  "language": "en",
+  "modifiers": ["forced"]
+}
+```
+
+`language` is a two-letter or BCP-47-ish tag (`en`, `en-GB`, `es`), `null` when no language was extractable (typical for `.nfo` and artwork). `modifiers` are subtitle-only attributes like `"forced"` or `"sdh"`; empty list for non-subtitle sidecars.
 
 ### `Candidate`
 
@@ -109,7 +125,6 @@ A source-row carried across the wire. The shell holds these in its own state and
 ```json
 {
   "row_id": "/absolute/path/to/file.mkv",
-  "source_path": "/absolute/path/to/file.mkv",
   "parsed": <ParseResult>,
   "candidate": <Candidate | null>,
   "show_name_hint": "Foo Bar",
@@ -125,7 +140,7 @@ A source-row carried across the wire. The shell holds these in its own state and
 }
 ```
 
-`group_key` shape: `movie::<source_path>` for movies (one row per group), `tv::<show_hint>` for TV (1..N rows). `row_id` is stable across calls — the shell uses it to refer to a specific row in `edit_row`. `source_path` is also present at the top level for convenience; it matches `parsed.source_path`.
+`group_key` shape: `movie::<source_path>` for movies (one row per group), `tv::<show_hint>` for TV (1..N rows). `row_id` is stable across calls — the shell uses it to refer to a specific row in `edit_row`. The row's source path lives at `parsed.source_path`.
 
 ### `Group`
 

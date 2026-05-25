@@ -74,7 +74,15 @@ ResolverFactory = Callable[[TMDBLike, Settings], IMDbFallbackResolver]
 # would defeat connection reuse and the in-process request memoization
 # that ``TMDBCache`` performs on top of the disk cache. We DO want to
 # rebuild when the shell saves new credentials, hence the keyed cache.
+#
+# Bounded LRU-style: under normal operation a single shell session has
+# exactly one credential pair so the cache is size 1. The bound exists
+# only as a safety belt against pathological credential churn (an
+# attacker / buggy shell hammering ``save_settings`` with rotating
+# keys); without it the cache could grow unbounded. When the bound is
+# hit we drop the oldest entry (insertion order via ``dict``).
 _TMDB_CLIENT_CACHE: dict[tuple[str, str], TMDBLike] = {}
+_TMDB_CLIENT_CACHE_MAX = 4
 
 
 def _default_tmdb_factory(settings: Settings) -> TMDBLike:
@@ -98,6 +106,12 @@ def _default_tmdb_factory(settings: Settings) -> TMDBLike:
         return cached
     client = TMDBClient(api_key=api_key)
     cache = TMDBCache(client=client)
+    # Enforce the bound BEFORE insertion so the cache size strictly tops
+    # out at ``_TMDB_CLIENT_CACHE_MAX``. Pop the oldest insertion (Python
+    # 3.7+ dicts preserve insertion order).
+    while len(_TMDB_CLIENT_CACHE) >= _TMDB_CLIENT_CACHE_MAX:
+        oldest = next(iter(_TMDB_CLIENT_CACHE))
+        _TMDB_CLIENT_CACHE.pop(oldest, None)
     _TMDB_CLIENT_CACHE[cache_key] = cache
     return cache
 
@@ -141,10 +155,21 @@ def _config_path_override() -> Path | None:
 
 
 def _journal_dir_override() -> Path | None:
-    val = os.environ.get("PLEX_RENAMER_CONFIG_DIR")
-    if not val:
-        return None
-    return Path(val) / "journals"
+    """Resolve the journal directory override.
+
+    Honors ``PLEX_RENAMER_JOURNAL_DIR`` first (use this when tests need the
+    journals on a separate path from the config), falling back to
+    ``PLEX_RENAMER_CONFIG_DIR`` with a ``/journals`` suffix (the
+    convenience the daemon's existing tests use to redirect both writes
+    with a single env var).
+    """
+    journal_val = os.environ.get("PLEX_RENAMER_JOURNAL_DIR")
+    if journal_val:
+        return Path(journal_val)
+    config_val = os.environ.get("PLEX_RENAMER_CONFIG_DIR")
+    if config_val:
+        return Path(config_val) / "journals"
+    return None
 
 
 def _load_settings_from_params(params: dict[str, Any] | None) -> Settings:
