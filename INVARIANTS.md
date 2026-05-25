@@ -82,6 +82,8 @@ End-to-end pipeline correctness on the corpus generator's output is a load-beari
 
 The corpus generator is the source of truth for the input patterns the app must handle. Per-layer unit tests (parser tests, planner path tests, GUI widget tests) verify individual components; the corpus pipeline test verifies they compose correctly. Both layers are mandatory.
 
+See [`docs/testing-retrospective-v0.1.0.md`](docs/testing-retrospective-v0.1.0.md) for the full retrospective on how this discipline was learned (the v0.1.0 → v0.1.1 hotfix) and what it means for future briefs: every project whose core value is a pipeline must claim end-to-end pipeline correctness against realistic input as an explicit AC, not just per-layer units.
+
 ## Out of scope
 
 The following are explicitly not in scope. The product does not do these things.
