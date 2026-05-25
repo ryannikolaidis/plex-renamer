@@ -191,7 +191,12 @@ def test_e2e_lazarus_2_recovery_screenshots(qapp, qtbot, tmp_path, screenshots_d
 
     window, orchestrator = build_window(settings, tmdb_override=tmdb)
     qtbot.addWidget(window)
-    window.resize(1800, 1000)
+    # Match a realistic mid-sized desktop window the user might actually
+    # use. The previous 1800x1000 made the right column tall enough that
+    # the v0.1.3 user-visible Manual-override squish never reproduced;
+    # this size puts the layout under enough pressure that broken size
+    # policies overlap their child widgets.
+    window.resize(1400, 850)
     window.show()
     QApplication.processEvents()
 
@@ -256,8 +261,9 @@ def test_e2e_lazarus_2_recovery_screenshots(qapp, qtbot, tmp_path, screenshots_d
     _save_screenshot(window, screenshots_dir, "03_edit_pane_open")
 
     # ASSERTIONS on Step 3: Bug B regression gate. The TMDB search
-    # panel must render at meaningful height (>= 150px); the IMDb /
-    # Manual boxes must NOT dwarf it.
+    # panel must render at meaningful height (>= 150px); the override
+    # boxes must render at their full sizeHint so the inner QFormLayout
+    # rows don't overlap (the v0.1.3 user-reported "squished" labels).
     edit_pane = window.edit_pane()
     tmdb_panel = edit_pane.tmdb_panel()
     panel_height = tmdb_panel.height()
@@ -267,14 +273,22 @@ def test_e2e_lazarus_2_recovery_screenshots(qapp, qtbot, tmp_path, screenshots_d
     )
     imdb_box = edit_pane.imdb_box()
     manual_box = edit_pane.manual_box()
-    # The override boxes should be smaller than the TMDB panel — that's
-    # exactly the point of the Maximum size policy fix.
-    assert imdb_box.height() < panel_height, (
-        f"Bug B regression: IMDb box ({imdb_box.height()}px) >= TMDB panel ({panel_height}px)"
+    # Each override box must render at AT LEAST its sizeHint height so
+    # the inner form rows don't overlap. Manual override has 5 rows
+    # plus the Apply button + group title — sizeHint is typically
+    # ~190-220px. IMDb override has 2 rows plus group title — ~80-100px.
+    # Asserting on actual >= sizeHint catches the regression where Qt
+    # silently compressed Fixed-policy boxes below sizeHint and the
+    # QFormLayout rows visually overlapped.
+    assert manual_box.height() >= manual_box.sizeHint().height(), (
+        f"Bug C regression: Manual override box rendered at "
+        f"{manual_box.height()}px below its sizeHint "
+        f"{manual_box.sizeHint().height()}px — form rows will overlap"
     )
-    assert manual_box.height() < panel_height * 2, (
-        f"Bug B regression: Manual box ({manual_box.height()}px) is "
-        f"unreasonably tall vs TMDB panel ({panel_height}px)"
+    assert imdb_box.height() >= imdb_box.sizeHint().height(), (
+        f"Bug C regression: IMDb override box rendered at "
+        f"{imdb_box.height()}px below its sizeHint "
+        f"{imdb_box.sizeHint().height()}px"
     )
 
     # ----- Step 4: click the group header to open the picker -----
@@ -330,6 +344,25 @@ def test_e2e_lazarus_2_recovery_screenshots(qapp, qtbot, tmp_path, screenshots_d
         assert any(q == "Lazarus" for q, _ in tmdb.search_calls), (
             f"expected fallback search for 'Lazarus'; got {tmdb.search_calls}"
         )
+
+        # ASSERTIONS on the new clickable URL UI in the picker. Selecting
+        # any result should populate a hyperlink label with the
+        # themoviedb.org / imdb.com URL so the user can validate before
+        # picking. The "View on..." button text adapts to the anchor
+        # kind. This is the affordance the v0.1.3 user asked for —
+        # "there should be a way to link to the tmdb page for each so i
+        # can validate".
+        picker.select_result(0)
+        QApplication.processEvents()
+        assert picker._url_label.isVisible(), "URL label should be visible once a row is selected"
+        # The TMDB id 231003 -> URL.
+        assert "themoviedb.org/tv/231003" in picker._url_label.text(), (
+            f"URL label missing tv/231003 link: {picker._url_label.text()!r}"
+        )
+        assert picker._view_btn.text() == "View on TMDB", (
+            f"view button should say 'View on TMDB' for TMDB anchor: {picker._view_btn.text()!r}"
+        )
+        assert picker._view_btn.isEnabled(), "View button should be enabled with selection"
 
         # ASSERTIONS on Step 4 continued: Bug C ranking. After the
         # local rank step, "Lazarus" must outrank "The Lazarus
@@ -392,6 +425,42 @@ def test_e2e_lazarus_2_recovery_screenshots(qapp, qtbot, tmp_path, screenshots_d
         f"target missing canonical anchor: {sample_target}"
     )
     assert "Season 01" in sample_target, f"target missing Season 01: {sample_target}"
+    # The proposed target should sit under the configured TV root.
+    initial_tv_root = settings.tv_root
+    assert initial_tv_root is not None and sample_target.startswith(initial_tv_root), (
+        f"target should start with tv_root {initial_tv_root}; got {sample_target}"
+    )
+
+    # ----- Step 8: user changes TV root and Previews again -----
+    # This is the v0.1.3 user-reported bug: "I specified directory for
+    # TV at the bottom and hit preview again, but did not seem to
+    # update targets in the target panel." OrchestratorDeps.tv_root was
+    # snapshotted at startup and never refreshed; the
+    # library_roots_changed signal now wires the change through.
+    new_tv_root = tmp_path / "library" / "TV-NEW"
+    new_tv_root.mkdir(parents=True, exist_ok=True)
+    window._settings.tv_root = str(new_tv_root)
+    window.library_roots_changed.emit(
+        window._settings.movies_root or "", window._settings.tv_root or ""
+    )
+    QApplication.processEvents()
+
+    # Re-preview and confirm targets re-rendered under the NEW root.
+    window._on_preview_clicked()
+    QApplication.processEvents()
+    _save_screenshot(window, screenshots_dir, "08_after_tv_root_change_preview")
+
+    rows_with_ops = [r for r in window.item_model().rows() if r.proposed_op is not None]
+    assert len(rows_with_ops) == 13, (
+        f"expected 13 proposed ops after second Preview, got {len(rows_with_ops)}"
+    )
+    new_sample_target = str(rows_with_ops[0].proposed_op.target)
+    assert new_sample_target.startswith(str(new_tv_root)), (
+        f"after TV root change, target should start with {new_tv_root}; got {new_sample_target}"
+    )
+    assert "Lazarus (2025) {tmdb-231003}" in new_sample_target, (
+        f"target missing canonical anchor after root change: {new_sample_target}"
+    )
 
     # Final summary print so the primary agent can read the
     # screenshots in order.

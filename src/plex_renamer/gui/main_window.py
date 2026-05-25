@@ -98,6 +98,12 @@ class MainWindow(QMainWindow):
     group_clicked = Signal(str)  # group_key
     reanchor_requested = Signal(Path)  # collision target
 
+    # Fired when the user changes a library root via the bottom-bar
+    # Change... button. The orchestrator listens and rebuilds its deps
+    # so the next Preview / Apply reads the freshly-picked paths instead
+    # of the snapshot taken at startup.
+    library_roots_changed = Signal(str, str)  # movies_root, tv_root
+
     def __init__(
         self,
         settings: Settings,
@@ -211,16 +217,26 @@ class MainWindow(QMainWindow):
         # apportions the slack to the edit pane; the user can still
         # see content in those widgets when they're populated, and
         # the cap doesn't restrict the run report's scroll regions.
-        self._collision_review.setMaximumHeight(140)
-        self._run_report.setMaximumHeight(180)
+        # Cap collision review and run report so they don't claim more
+        # vertical space than they need when empty. The edit pane is the
+        # primary interaction surface; the other two are passive
+        # reporting widgets that only get populated AFTER a preview /
+        # apply, so on first paint they should be compact.
+        self._collision_review.setMaximumHeight(120)
+        self._run_report.setMaximumHeight(170)
         side = QSplitter()
         side.setOrientation(Qt.Orientation.Vertical)
         side.addWidget(self._edit_pane)
         side.addWidget(self._collision_review)
         side.addWidget(self._run_report)
-        side.setStretchFactor(0, 6)
+        # Bias the splitter strongly toward the edit pane — without
+        # this, the v0.1.3 user reported the IMDb / Manual override
+        # boxes were hidden below a scroll fold even on a desktop-sized
+        # window. The edit pane needs ~570px to render all its content
+        # without scrolling.
+        side.setStretchFactor(0, 10)
         side.setStretchFactor(1, 1)
-        side.setStretchFactor(2, 2)
+        side.setStretchFactor(2, 1)
         self._side_splitter = side
 
         # Body splitter: panels on the left, side on the right.
@@ -270,12 +286,14 @@ class MainWindow(QMainWindow):
         total = self._side_splitter.height()
         if total <= 0:
             return
-        # Give the edit pane roughly 70% of the vertical space, the
-        # collision review 12%, and the run report 18%. Computed from
-        # the actual realized height so it adapts when the user
-        # resizes the window.
-        edit_h = int(total * 0.70)
-        coll_h = int(total * 0.12)
+        # Give the edit pane the dominant share (80%) so the IMDb +
+        # Manual override boxes fit without forcing the user to scroll
+        # the edit pane viewport on a typical desktop window. The
+        # remaining 20% splits between collision review (8%) and run
+        # report (12%); both have maxHeight caps so they cap out at
+        # their natural sizeHint when empty.
+        edit_h = int(total * 0.80)
+        coll_h = int(total * 0.08)
         run_h = total - edit_h - coll_h
         self._side_splitter.setSizes([edit_h, coll_h, run_h])
 
@@ -335,6 +353,9 @@ class MainWindow(QMainWindow):
             self._settings.movies_root = chosen
             self._settings.save()
             self._refresh_root_labels()
+            self.library_roots_changed.emit(
+                self._settings.movies_root or "", self._settings.tv_root or ""
+            )
 
     def _change_tv_root(self) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "Pick the TV Shows root")
@@ -342,6 +363,9 @@ class MainWindow(QMainWindow):
             self._settings.tv_root = chosen
             self._settings.save()
             self._refresh_root_labels()
+            self.library_roots_changed.emit(
+                self._settings.movies_root or "", self._settings.tv_root or ""
+            )
 
     def movies_root_label(self) -> QLabel:
         return self._movies_root_label

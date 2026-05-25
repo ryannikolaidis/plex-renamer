@@ -174,8 +174,25 @@ class Orchestrator(QObject):
         main_window.reanchor_requested.connect(self.on_reanchor_requested)  # type: ignore[attr-defined]
         main_window.undone.connect(self.on_undo_requested)  # type: ignore[attr-defined]
         main_window.parsed_inputs.connect(self._on_parsed_inputs)  # type: ignore[attr-defined]
+        main_window.library_roots_changed.connect(self.update_library_roots)  # type: ignore[attr-defined]
         run_report = main_window.run_report_widget()  # type: ignore[attr-defined]
         self.resolve_errors_changed.connect(run_report.set_resolve_errors)
+
+    def update_library_roots(self, movies_root: str, tv_root: str) -> None:
+        """Refresh the orchestrator's library roots after a user change.
+
+        ``OrchestratorDeps.movies_root`` / ``tv_root`` are snapshotted at
+        construction time; without this hook the planner keeps using the
+        old paths even after the user picked a new destination via the
+        bottom-bar Change... buttons. The signal carries the raw settings
+        strings (since Settings stores them as ``str | None``); we coerce
+        to ``Path`` here and leave empty strings alone (Settings.save
+        with ``movies_root=""`` is treated the same as ``None``).
+        """
+        if movies_root:
+            self._deps.movies_root = Path(movies_root)
+        if tv_root:
+            self._deps.tv_root = Path(tv_root)
 
     # ----- Parse + resolve ------------------------------------------------
 
