@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using PlexRenamer.Bridge;
 using PlexRenamer.Bridge.Schemas;
-using PlexRenamer.Settings;
+using PlexRenamer.Configuration;
 using PlexRenamer.Views;
 using Wpf.Ui.Controls;
 

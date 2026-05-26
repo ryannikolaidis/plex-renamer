@@ -4,7 +4,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using PlexRenamer.Bridge.Schemas;
 
-namespace PlexRenamer.Settings;
+namespace PlexRenamer.Configuration;
 
 /// <summary>
 /// Reads / writes the same on-disk config file the Qt app uses

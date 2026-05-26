@@ -1,7 +1,7 @@
 using System;
 using System.IO;
 using PlexRenamer.Bridge.Schemas;
-using PlexRenamer.Settings;
+using PlexRenamer.Configuration;
 using Xunit;
 
 namespace PlexRenamer.Tests;
