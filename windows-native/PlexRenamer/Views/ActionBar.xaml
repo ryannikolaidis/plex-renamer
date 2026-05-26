@@ -1,0 +1,22 @@
+<UserControl x:Class="PlexRenamer.Views.ActionBar"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" MinHeight="48">
+        <ui:Button x:Name="SettingsButton"
+                   Content="Settings"
+                   Appearance="Secondary"
+                   Margin="0,0,8,0"
+                   Click="OnSettingsClick" />
+        <ui:Button x:Name="PreviewButton"
+                   Content="Preview"
+                   Appearance="Secondary"
+                   Margin="0,0,8,0"
+                   Click="OnPreviewClick" />
+        <ui:Button x:Name="ApplyButton"
+                   Content="Apply"
+                   Appearance="Primary"
+                   IsEnabled="False"
+                   Click="OnApplyClick" />
+    </StackPanel>
+</UserControl>

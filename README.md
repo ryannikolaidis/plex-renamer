@@ -48,6 +48,16 @@ uv run plex-renamer-engined
 
 The daemon reads newline-delimited JSON-RPC 2.0 requests on stdin and writes responses to stdout. See [`docs/win-native-bridge.md`](docs/win-native-bridge.md) for the protocol specification.
 
+Run the native Windows shell in dev (Windows only):
+
+```
+cd windows-native
+$Env:PLEX_RENAMER_REPO_ROOT = "<path to your plex-renamer clone>"
+dotnet run --project PlexRenamer
+```
+
+See [`windows-native/README.md`](windows-native/README.md) for the full dev setup, sidecar binary lookup rule, and visual smoke checklist. The WPF project targets `net8.0-windows`; `dotnet` commands only work on Windows. macOS / Linux developers rely on `windows-latest` CI for the WPF validation surface.
+
 ## Build
 
 Local builds are driven by the per-OS PyInstaller specs under `packaging/`. Each spec produces both a CLI bundle and a GUI bundle so the same artifact set works for power users (CLI) and end users (GUI).

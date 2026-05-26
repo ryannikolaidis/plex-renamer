@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>PlexRenamer</RootNamespace>
+    <AssemblyName>PlexRenamer</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- AssemblyName matches the installer's Start Menu shortcut target
+         (slice 5 wires `Program Files\plex-renamer\gui\PlexRenamer.exe`). -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WPF-UI (Lepoco) provides Fluent / Mica controls and theme bootstrap
+         aligned with Windows 11 visual conventions. Pinned at 3.0.x because
+         that line targets .NET 8 LTS. If WPF-UI proves unworkable, swap to
+         ModernWpfUI per the brief's fallback note. -->
+    <PackageReference Include="WPF-UI" Version="3.0.5" />
+  </ItemGroup>
+
+</Project>

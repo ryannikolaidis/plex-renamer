@@ -1,0 +1,36 @@
+<UserControl x:Class="PlexRenamer.Views.SourcePanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+    <Border BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+            BorderThickness="1"
+            CornerRadius="6">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0"
+                       Text="Source"
+                       Margin="12,8,12,4"
+                       FontWeight="SemiBold"
+                       FontSize="14" />
+            <ListBox x:Name="RowsListBox"
+                     Grid.Row="1"
+                     BorderThickness="0"
+                     Background="Transparent"
+                     HorizontalContentAlignment="Stretch">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Margin="12,4">
+                            <TextBlock Text="{Binding Parsed.RawFilename}" />
+                            <TextBlock Text="{Binding GroupKey}"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                       FontSize="11" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Grid>
+    </Border>
+</UserControl>

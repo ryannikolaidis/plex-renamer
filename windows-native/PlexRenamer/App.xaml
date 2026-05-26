@@ -1,0 +1,17 @@
+<Application x:Class="PlexRenamer.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             StartupUri="MainWindow.xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- WPF-UI's theming resources. The Light/Dark dictionaries
+                     are swapped at runtime by ApplicationThemeManager.Apply
+                     in App.xaml.cs based on the user's system theme. -->
+                <ui:ThemesDictionary Theme="Light" />
+                <ui:ControlsDictionary />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

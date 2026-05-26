@@ -72,6 +72,21 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: uv run pytest -v
 
+      - name: Set up .NET 8 (Windows only)
+        if: runner.os == 'Windows'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build and test windows-native (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cd windows-native
+          dotnet restore PlexRenamer.sln
+          dotnet build PlexRenamer.sln --no-restore --configuration Release
+          dotnet test PlexRenamer.sln --no-build --configuration Release --logger "console;verbosity=normal"
+
       - name: Build and smoke-test engine sidecar (Windows only)
         if: runner.os == 'Windows'
         shell: bash
