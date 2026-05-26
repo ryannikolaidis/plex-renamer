@@ -55,12 +55,12 @@ public partial class App : Application
         Dispatcher.BeginInvoke(() =>
         {
             var detail = e.Stderr is { Length: > 0 } ? $"\n\nStderr:\n{e.Stderr}" : string.Empty;
-            MessageBox.Show(
+            System.Windows.MessageBox.Show(
                 $"The engine sidecar exited unexpectedly (code {e.ExitCode}).{detail}\n\n" +
                 "Click OK to restart the sidecar. Preview / Apply are disabled until it's back.",
                 "Engine sidecar died",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Warning);
             // The Restart button on the modal would call EngineClient.RestartAsync.
             // Slice 2 ships the modal as an OK acknowledgment with a restart on click;
             // a richer recovery UI is part of slice 3 / 4 polish.

@@ -86,12 +86,12 @@ public partial class MainWindow : FluentWindow
         }
         catch (Exception ex)
         {
-            MessageBox.Show(
+            System.Windows.MessageBox.Show(
                 $"Failed to start the engine sidecar.\n\n{ex.Message}\n\nSee " +
                 "windows-native/README.md for the dev-mode spawn rule.",
                 "Engine startup failed",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Error);
         }
     }
 
@@ -105,11 +105,11 @@ public partial class MainWindow : FluentWindow
         }
         catch (BridgeException ex)
         {
-            MessageBox.Show(
+            System.Windows.MessageBox.Show(
                 $"The engine returned an error:\n\n{ex.Message}",
                 "Parse / resolve failed",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Error);
         }
     }
 
