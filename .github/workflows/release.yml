@@ -94,10 +94,26 @@ jobs:
 
       # --- Windows build -----------------------------------------------
 
-      - name: PyInstaller build (Windows)
+      - name: Set up .NET 8 (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: PyInstaller build CLI (Windows)
         if: runner.os == 'Windows'
         run: |
-          uv run pyinstaller packaging/windows/plex-renamer.spec --distpath dist --workpath build --noconfirm
+          uv run pyinstaller packaging/windows/plex-renamer-cli.spec --distpath dist --workpath build --noconfirm
+
+      - name: PyInstaller build engine sidecar (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          uv run pyinstaller packaging/windows/plex-renamer-engined.spec --distpath dist --workpath build --noconfirm
+
+      - name: dotnet publish WPF native shell (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          dotnet publish windows-native/PlexRenamer.sln -c Release -r win-x64 --self-contained false -o dist/plex-renamer-gui
 
       - name: Smoke-test CLI (Windows)
         if: runner.os == 'Windows'

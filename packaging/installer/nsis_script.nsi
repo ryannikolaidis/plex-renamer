@@ -1,14 +1,19 @@
 ; NSIS installer script for plex-renamer Windows release.
 ;
 ; Driven from .github/workflows/release.yml and `make build-win`. The
-; PyInstaller spec at packaging/windows/plex-renamer.spec produces two
-; one-folder bundles under ``dist/``:
+; build produces three artifact directories under ``dist/``:
 ;
-;   dist/plex-renamer-cli/   (contains plex-renamer.exe + DLLs)
-;   dist/plex-renamer-gui/   (contains plex-renamer-gui.exe + Qt DLLs)
+;   dist/plex-renamer-cli/        (PyInstaller; contains plex-renamer.exe + DLLs)
+;   dist/plex-renamer-engined/    (PyInstaller; sidecar daemon binary)
+;   dist/plex-renamer-gui/        (dotnet publish; WPF .NET 8 native shell)
 ;
-; This script packages BOTH folders into a single setup .exe that
-; installs them under ``%ProgramFiles%\plex-renamer``. The installer is
+; This script packages all three into a single setup .exe. The WPF .exe
+; (``PlexRenamer.exe``) and the sidecar binary
+; (``plex-renamer-engined.exe``) install side-by-side under ``gui\`` so
+; the WPF EngineClient finds the sidecar via the sibling-path lookup
+; rule documented in ``windows-native/README.md``.
+;
+; The legacy Qt GUI .exe no longer ships on Windows. The installer is
 ; unsigned for the first release; signing is a follow-up.
 
 !define APP_NAME "plex-renamer"
@@ -56,14 +61,24 @@ Section "Install"
     File "..\..\dist\plex-renamer-cli\plex-renamer.exe"
     File /r "..\..\dist\plex-renamer-cli\_internal"
 
-    ; GUI bundle: same layout, same per-source listing.
+    ; GUI bundle: the WPF .NET 8 native shell (PlexRenamer.exe) AND the
+    ; engine sidecar binary (plex-renamer-engined.exe) install side-by-
+    ; side. EngineClient.ResolveSidecarCommand looks for the sidecar as
+    ; a sibling of the WPF .exe (installed-mode path), so placing both
+    ; under the same gui\ directory satisfies that contract without any
+    ; runtime env vars. ``dotnet publish`` writes a flat dist directory
+    ; with PlexRenamer.exe + its dependent assemblies; the /r File glob
+    ; copies the whole layout.
     SetOutPath "$INSTDIR\gui"
-    File "..\..\dist\plex-renamer-gui\plex-renamer-gui.exe"
-    File /r "..\..\dist\plex-renamer-gui\_internal"
+    File /r "..\..\dist\plex-renamer-gui\*"
+    ; The sidecar comes from a separate PyInstaller bundle; copy its
+    ; .exe + _internal/ alongside the WPF assemblies.
+    File "..\..\dist\plex-renamer-engined\plex-renamer-engined.exe"
+    File /r "..\..\dist\plex-renamer-engined\_internal"
 
-    ; Start-menu shortcut to the GUI.
+    ; Start-menu shortcut to the WPF GUI.
     CreateDirectory "$SMPROGRAMS\${APP_NAME}"
-    CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\gui\plex-renamer-gui.exe"
+    CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\gui\PlexRenamer.exe"
 
     ; Uninstaller.
     WriteUninstaller "$INSTDIR\uninstall.exe"

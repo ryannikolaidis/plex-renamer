@@ -80,16 +80,21 @@ Produces:
 make build-win
 ```
 
-Produces:
+Produces (Windows only — requires .NET 8 SDK + uv + NSIS on PATH):
 
-- `dist/plex-renamer-cli/plex-renamer.exe` — the CLI binary
-- `dist/plex-renamer-gui/plex-renamer-gui.exe` — the GUI binary
+- `dist/plex-renamer-cli/plex-renamer.exe` — CLI binary (PyInstaller).
+- `dist/plex-renamer-engined/plex-renamer-engined.exe` — engine sidecar daemon (PyInstaller).
+- `dist/plex-renamer-gui/PlexRenamer.exe` — WPF .NET 8 native shell (dotnet publish).
 
-To build the NSIS installer locally (Windows only, requires NSIS on PATH):
+The native shell replaces the legacy Qt GUI on Windows; only the WPF binary ships in the Windows installer. macOS continues to ship the Qt-based `.app` unchanged.
+
+To build the NSIS installer locally (after `make build-win`):
 
 ```
 makensis packaging/installer/nsis_script.nsi
 ```
+
+The installer puts the CLI at `Program Files\plex-renamer\cli\plex-renamer.exe` and the WPF GUI + sidecar side-by-side at `Program Files\plex-renamer\gui\` (so `EngineClient` finds the sidecar via the sibling-path lookup). The Start Menu shortcut points to `PlexRenamer.exe`.
 
 The CI release workflow installs NSIS via chocolatey and runs the installer step automatically — see [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
