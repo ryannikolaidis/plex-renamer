@@ -68,23 +68,36 @@ public class RenderingTests
     }
 
     [StaFact]
-    public void SettingsDialog_RendersWithNonZeroDimensions()
+    public void SettingsDialog_ContentRendersWithNonZeroDimensions()
     {
-        // SettingsDialog is a FluentWindow (not a UserControl). It still
-        // needs the [StaFact] rendering bar: the brief mandates rendering
-        // tests for every load-bearing control to catch the "squished"
-        // defect class, and a settings dialog with zero-size text boxes
-        // is exactly the failure mode this discipline catches.
+        // SettingsDialog is a FluentWindow (top-level), not a UserControl.
+        // WPF top-level windows don't get ActualWidth/ActualHeight from a
+        // synthetic Measure+Arrange — those come from the actual window
+        // host taking the Width/Height properties + chrome. Test the
+        // INNER content instead: the dialog's Content (a Grid) is what
+        // actually needs to lay out correctly, and a squished-content
+        // bug would surface as zero-size inner controls.
         var initial = new PlexRenamer.Bridge.Schemas.Settings
         {
             TmdbApiKey = "test",
             MoviesRoot = @"C:\Movies",
         };
         var dialog = new PlexRenamer.Views.SettingsDialog(initial);
-        // FluentWindow has size constraints in its constructor (Width=520,
-        // Height=480). Force layout against that intrinsic size.
-        MeasureAndArrange(dialog, new Size(520, 480));
-        Assert.True(dialog.ActualWidth > 0, "SettingsDialog width must be non-zero after layout.");
-        Assert.True(dialog.ActualHeight > 0, "SettingsDialog height must be non-zero after layout.");
+        // Construction itself proves XAML parses + bindings resolve.
+        Assert.Equal(520, dialog.Width);
+        Assert.Equal(480, dialog.Height);
+        // Force the inner content to lay out. The Grid inside the
+        // FluentWindow is a regular FrameworkElement and does honor
+        // Measure+Arrange.
+        if (dialog.Content is FrameworkElement content)
+        {
+            MeasureAndArrange(content, new Size(488, 432));  // 520-32, 480-48 (chrome + margins)
+            Assert.True(content.ActualWidth > 0, "SettingsDialog content width must be non-zero after layout.");
+            Assert.True(content.ActualHeight > 0, "SettingsDialog content height must be non-zero after layout.");
+        }
+        else
+        {
+            Assert.Fail("SettingsDialog.Content was not a FrameworkElement after construction.");
+        }
     }
 }
