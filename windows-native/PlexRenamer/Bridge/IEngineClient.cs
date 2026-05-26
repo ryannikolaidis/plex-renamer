@@ -83,7 +83,16 @@ public interface IEngineClient : IAsyncDisposable
         Settings? settings,
         CancellationToken cancellationToken = default);
 
-    // build_plan + undo_batch are added in slice 4 with the Apply-time UI.
+    Task<BuildPlanResult> BuildPlanAsync(
+        IReadOnlyList<ResolvedRow> rows,
+        string? inputRoot,
+        bool applyEditions,
+        Settings? settings,
+        CancellationToken cancellationToken = default);
+
+    Task<UndoReport> UndoBatchAsync(
+        string journalPath,
+        CancellationToken cancellationToken = default);
 
     // ---- Streaming RPC method ----
 

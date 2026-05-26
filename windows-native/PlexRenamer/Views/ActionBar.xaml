@@ -16,7 +16,7 @@
         <ui:Button x:Name="ApplyButton"
                    Content="Apply"
                    Appearance="Primary"
-                   IsEnabled="False"
+                   IsEnabled="True"
                    Click="OnApplyClick" />
     </StackPanel>
 </UserControl>

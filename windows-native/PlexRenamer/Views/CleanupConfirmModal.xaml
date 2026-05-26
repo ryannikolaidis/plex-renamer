@@ -1,0 +1,59 @@
+<ui:FluentWindow x:Class="PlexRenamer.Views.CleanupConfirmModal"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 Title="Confirm source cleanup"
+                 Width="700"
+                 Height="560"
+                 WindowStartupLocation="CenterOwner"
+                 WindowBackdropType="Mica"
+                 ExtendsContentIntoTitleBar="True">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0" Title="Confirm source cleanup" />
+
+        <TextBlock Grid.Row="1"
+                   TextWrapping="Wrap"
+                   Margin="0,16,0,8"
+                   FontWeight="SemiBold"
+                   Foreground="{DynamicResource SystemFillColorCautionBrush}">
+            <Run Text="⚠ This will delete every file and (now-empty) parent directory listed below after the copy verifies." />
+        </TextBlock>
+
+        <ScrollViewer Grid.Row="2"
+                      BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                      BorderThickness="1"
+                      VerticalScrollBarVisibility="Auto">
+            <ItemsControl x:Name="PathsList">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding}"
+                                   Margin="8,2"
+                                   FontFamily="Consolas"
+                                   FontSize="11"
+                                   TextTrimming="CharacterEllipsis" />
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <CheckBox x:Name="UnderstandCheckbox"
+                  Grid.Row="3"
+                  Content="I understand, delete these files"
+                  Margin="0,12,0,0"
+                  Checked="OnUnderstandToggled"
+                  Unchecked="OnUnderstandToggled" />
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <ui:Button x:Name="CancelButton" Content="Cancel" Appearance="Secondary" Margin="0,0,8,0" Click="OnCancelClick" />
+            <ui:Button x:Name="ProceedButton" Content="Apply with cleanup" Appearance="Primary" IsEnabled="False" Click="OnProceedClick" />
+        </StackPanel>
+    </Grid>
+</ui:FluentWindow>

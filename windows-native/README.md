@@ -82,9 +82,15 @@ There is no automated pixel-diff testing in this slice (explicitly out of scope)
 4. Click Apply — verify the button is disabled and shows the "Collision review and cleanup confirmation arrive in a later step." tooltip on hover.
 5. Resize the window to 900×600 (the minimum) and confirm no controls are clipped.
 
-## Future slices
+## Apply-time flow
 
-This shell is iteratively built. The action bar's Apply button + collision-review / cleanup-confirm modals + run report widget land in the apply-time UI slice. The per-row edit pane, show-anchor picker dialog, confidence badge, library-roots inline editing, and first-run TMDB key prompt ship in this slice (resolve-time UI); Apply stays disabled until the safety modals exist.
+The Apply button is wired end-to-end. Pressing Apply runs this pipeline:
+
+1. **`build_plan`** — daemon assembles a `PlanOp` from the current rows + settings. Collisions are detected here.
+2. **Collision review** — if the plan has non-empty `Collisions`, the WPF shell opens `CollisionReviewDialog` listing each conflicting target with its source candidates. The initial cut takes a "skip all colliding sources" path: the user can either cancel the apply or confirm that every colliding source is marked as skip via `edit_row`. The plan is then re-built and the apply continues.
+3. **Cleanup confirmation** — if `Settings.CleanupEnabled` is true, `CleanupConfirmModal` lists every source path and parent directory scheduled for deletion. The user MUST explicitly tick "I understand, delete these files" before the Apply button on the modal enables. Closing or unchecking aborts the entire apply (safer than half-applying without cleanup).
+4. **`apply_plan` (streaming)** — daemon copies files, emits progress notifications (announce → blocking executor → batch verify per the doc), and returns the `RunReport` on the terminal `done` event.
+5. **`RunReport` widget** — appears under the source/target panels. Shows succeeded / failed / skipped counts and per-row error messages. The "Undo this batch" button calls `undo_batch` with the daemon-returned `journal_path`; on success it surfaces a modal noting whether sources are recoverable (cleanup-ran batches lose source files; non-cleanup batches restore fully).
 
 ## Resolve-time flow
 

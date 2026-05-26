@@ -36,19 +36,149 @@ public partial class MainWindow : FluentWindow
     {
         DropZoneControl.PathsDropped += OnPathsDropped;
         ActionBarControl.PreviewClicked += OnPreviewClicked;
+        ActionBarControl.ApplyClicked += OnApplyClicked;
         ActionBarControl.SettingsClicked += OnSettingsClicked;
         SourcePanelControl.RowActivated += OnSourceRowActivated;
         SourcePanelControl.GroupAnchorRequested += OnGroupAnchorRequested;
         LibraryRootsControl.RootsChanged += OnLibraryRootsChanged;
-        // Apply stays disabled in slice 2; slice 4 wires it.
-        ActionBarControl.IsApplyEnabled = false;
-        ActionBarControl.ApplyTooltip =
-            "Collision review and cleanup confirmation arrive in a later step.";
+        RunReportControl.UndoRequested += OnUndoRequested;
+        // Apply is wired in slice 4: safety modals exist (CollisionReviewDialog,
+        // CleanupConfirmModal). The button now bridges to the apply flow.
+        ActionBarControl.IsApplyEnabled = true;
+        ActionBarControl.ApplyTooltip = "Apply the plan to disk.";
 
         if (App.EngineClient is not null)
         {
             App.EngineClient.UnexpectedExit += OnEngineUnexpectedExit;
         }
+    }
+
+    private async void OnApplyClicked(object? sender, EventArgs e)
+    {
+        if (_currentRows.Count == 0)
+        {
+            return;
+        }
+        try
+        {
+            await EnsureEngineStartedAsync();
+            // 1. build_plan to detect collisions before any FS touch.
+            var planResult = await App.EngineClient.BuildPlanAsync(
+                _currentRows, inputRoot: null, applyEditions: false, _currentSettings);
+            var plan = planResult.Plan;
+
+            // 2. If there are collisions, surface CollisionReviewDialog.
+            if (plan.Collisions.Count > 0)
+            {
+                var collisionDialog = new CollisionReviewDialog(plan.Collisions) { Owner = this };
+                if (collisionDialog.ShowDialog() != true)
+                {
+                    return;
+                }
+                var rowsAfterSkips = _currentRows;
+                foreach (var srcPath in collisionDialog.SkippedSourcePaths)
+                {
+                    var matching = FindRowByPath(rowsAfterSkips, srcPath);
+                    if (matching == null) continue;
+                    var editResult = await App.EngineClient.EditRowAsync(
+                        rowsAfterSkips, matching.RowId,
+                        new EditRowOverrides { Skip = true }, _currentSettings);
+                    rowsAfterSkips = editResult.Rows;
+                }
+                _currentRows = rowsAfterSkips;
+                SourcePanelControl.LoadRows(_currentRows, _currentGroups);
+                planResult = await App.EngineClient.BuildPlanAsync(
+                    _currentRows, inputRoot: null, applyEditions: false, _currentSettings);
+                plan = planResult.Plan;
+            }
+
+            // 3. Cleanup-confirm modal if settings.CleanupEnabled.
+            var cleanupRequested = _currentSettings.CleanupEnabled;
+            if (cleanupRequested)
+            {
+                var paths = new List<string>();
+                foreach (var op in plan.Ops) paths.Add(op.Source);
+                foreach (var op in plan.Ops)
+                {
+                    foreach (var sidecar in op.Sidecars)
+                    {
+                        if (sidecar.Count > 0) paths.Add(sidecar[0]);
+                    }
+                }
+                var cleanupModal = new CleanupConfirmModal(paths) { Owner = this };
+                if (cleanupModal.ShowDialog() != true)
+                {
+                    // Abort the whole apply rather than half-apply without cleanup.
+                    return;
+                }
+            }
+
+            // 4. apply_plan (streaming).
+            RunReportControl.Visibility = System.Windows.Visibility.Visible;
+            Bridge.RunReport? finalReport = null;
+            await foreach (var ev in App.EngineClient.ApplyPlanAsync(
+                plan, cleanupRequested, verifyHash: false, _currentSettings))
+            {
+                if (ev.EventKind == "done" && ev.Result != null)
+                {
+                    finalReport = ev.Result;
+                }
+            }
+
+            if (finalReport != null)
+            {
+                RunReportControl.Show(finalReport);
+            }
+        }
+        catch (BridgeException ex)
+        {
+            System.Windows.MessageBox.Show(
+                $"Apply failed:\n\n{ex.Message}",
+                "Apply error",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Error);
+        }
+    }
+
+    private async void OnUndoRequested(object? sender, string journalPath)
+    {
+        try
+        {
+            await EnsureEngineStartedAsync();
+            var report = await App.EngineClient.UndoBatchAsync(journalPath);
+            var msg = $"Reverted: {report.Reverted}\n"
+                + $"Moved to review: {report.MovedToReview}\n"
+                + (report.ReviewDir != null ? $"Review dir: {report.ReviewDir}\n" : "")
+                + (report.SourcesRecoverable
+                    ? "Sources recoverable."
+                    : "Sources NOT recoverable — cleanup ran on this batch.");
+            System.Windows.MessageBox.Show(
+                msg,
+                "Undo complete",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Information);
+            RunReportControl.Clear();
+        }
+        catch (BridgeException ex)
+        {
+            System.Windows.MessageBox.Show(
+                $"Undo failed:\n\n{ex.Message}",
+                "Undo error",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Error);
+        }
+    }
+
+    private static ResolvedRow? FindRowByPath(IReadOnlyList<ResolvedRow> rows, string sourcePath)
+    {
+        foreach (var r in rows)
+        {
+            if (r.Parsed.SourcePath == sourcePath)
+            {
+                return r;
+            }
+        }
+        return null;
     }
 
     private async Task MaybePromptForTmdbKeyAsync()
