@@ -16,13 +16,20 @@ public partial class MainWindow : FluentWindow
     private readonly SettingsStore _settingsStore = new();
     private Bridge.Schemas.Settings _currentSettings;
     private bool _engineStarted;
+    private IReadOnlyList<ResolvedRow> _currentRows = Array.Empty<ResolvedRow>();
+    private IReadOnlyList<ResolvedGroup> _currentGroups = Array.Empty<ResolvedGroup>();
 
     public MainWindow()
     {
         InitializeComponent();
         _currentSettings = _settingsStore.Load();
+        LibraryRootsControl.SetRoots(_currentSettings.MoviesRoot, _currentSettings.TvRoot);
         WireEvents();
         ApplyEngineState();
+        // First-run TMDB key prompt: show after window appears (Loaded)
+        // so the modal has a real owner. Settings.Load returned an empty
+        // record on a fresh install; check the key field.
+        Loaded += (_, _) => _ = MaybePromptForTmdbKeyAsync();
     }
 
     private void WireEvents()
@@ -30,6 +37,9 @@ public partial class MainWindow : FluentWindow
         DropZoneControl.PathsDropped += OnPathsDropped;
         ActionBarControl.PreviewClicked += OnPreviewClicked;
         ActionBarControl.SettingsClicked += OnSettingsClicked;
+        SourcePanelControl.RowActivated += OnSourceRowActivated;
+        SourcePanelControl.GroupAnchorRequested += OnGroupAnchorRequested;
+        LibraryRootsControl.RootsChanged += OnLibraryRootsChanged;
         // Apply stays disabled in slice 2; slice 4 wires it.
         ActionBarControl.IsApplyEnabled = false;
         ActionBarControl.ApplyTooltip =
@@ -38,6 +48,109 @@ public partial class MainWindow : FluentWindow
         if (App.EngineClient is not null)
         {
             App.EngineClient.UnexpectedExit += OnEngineUnexpectedExit;
+        }
+    }
+
+    private async Task MaybePromptForTmdbKeyAsync()
+    {
+        if (!string.IsNullOrEmpty(_currentSettings.TmdbApiKey))
+        {
+            return;
+        }
+        var prompt = new TmdbKeyPrompt { Owner = this };
+        if (prompt.ShowDialog() == true && !string.IsNullOrEmpty(prompt.EnteredKey))
+        {
+            try
+            {
+                await EnsureEngineStartedAsync();
+                var saved = await App.EngineClient.SaveSettingsAsync(_currentSettings with
+                {
+                    TmdbApiKey = prompt.EnteredKey,
+                });
+                _currentSettings = saved;
+                LibraryRootsControl.SetRoots(saved.MoviesRoot, saved.TvRoot);
+            }
+            catch (BridgeException ex)
+            {
+                System.Windows.MessageBox.Show(
+                    $"Could not save TMDB key:\n\n{ex.Message}",
+                    "TMDB key",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Warning);
+            }
+        }
+    }
+
+    private async void OnSourceRowActivated(object? sender, ResolvedRow row)
+    {
+        await EnsureEngineStartedAsync();
+        var dialog = new EditPane(App.EngineClient, _currentSettings, row, _currentRows)
+        {
+            Owner = this,
+        };
+        if (dialog.ShowDialog() == true && dialog.UpdatedRows is { } updated)
+        {
+            _currentRows = updated;
+            SourcePanelControl.LoadRows(updated, _currentGroups);
+            TargetPanelControl.LoadFrom(new ParseResolveResult
+            {
+                Rows = updated,
+                Groups = _currentGroups,
+                InputRoot = string.Empty,
+            });
+        }
+    }
+
+    private async void OnGroupAnchorRequested(object? sender, ResolvedGroup group)
+    {
+        await EnsureEngineStartedAsync();
+        var picker = new ShowAnchorPicker(App.EngineClient, _currentSettings, group.Label)
+        {
+            Owner = this,
+        };
+        if (picker.ShowDialog() == true && picker.PickedCandidate is { } candidate)
+        {
+            try
+            {
+                var result = await App.EngineClient.SelectAnchorAsync(
+                    _currentRows, group.GroupKey, candidate, _currentSettings);
+                _currentRows = result.Rows;
+                SourcePanelControl.LoadRows(_currentRows, _currentGroups);
+                TargetPanelControl.LoadFrom(new ParseResolveResult
+                {
+                    Rows = _currentRows,
+                    Groups = _currentGroups,
+                    InputRoot = string.Empty,
+                });
+            }
+            catch (BridgeException ex)
+            {
+                System.Windows.MessageBox.Show(
+                    $"Could not apply anchor:\n\n{ex.Message}",
+                    "Anchor selection",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Warning);
+            }
+        }
+    }
+
+    private async void OnLibraryRootsChanged(object? sender, LibraryRootsChangedEventArgs e)
+    {
+        var updatedSettings = _currentSettings with
+        {
+            MoviesRoot = e.MoviesRoot,
+            TvRoot = e.TvRoot,
+        };
+        try
+        {
+            await EnsureEngineStartedAsync();
+            _currentSettings = await App.EngineClient.SaveSettingsAsync(updatedSettings);
+        }
+        catch (BridgeException)
+        {
+            // Daemon errored; persist locally so the UI state is consistent.
+            _currentSettings = updatedSettings;
+            _settingsStore.Save(_currentSettings);
         }
     }
 
@@ -157,6 +270,8 @@ public partial class MainWindow : FluentWindow
         try
         {
             var result = await App.EngineClient.ParseAndResolveAsync(paths, _currentSettings);
+            _currentRows = result.Rows;
+            _currentGroups = result.Groups;
             SourcePanelControl.LoadFrom(result);
             TargetPanelControl.LoadFrom(result);
         }

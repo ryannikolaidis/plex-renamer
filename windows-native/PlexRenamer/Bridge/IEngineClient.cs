@@ -51,11 +51,39 @@ public interface IEngineClient : IAsyncDisposable
         Settings? settings,
         CancellationToken cancellationToken = default);
 
-    // Other one-shot methods (search_tmdb_free, find_by_imdb,
-    // iterate_anchor_search, select_anchor, edit_row, build_plan,
-    // undo_batch) are added in slices 3 and 4 as their UI surfaces land.
-    // Slice 2's scope is parse+display + settings, so only the methods
-    // those flows need are exposed here.
+    Task<TmdbSearchResult> SearchTmdbFreeAsync(
+        string query,
+        string kind,
+        Settings? settings,
+        CancellationToken cancellationToken = default);
+
+    Task<FindByImdbResult> FindByImdbAsync(
+        string imdbId,
+        ResolvedRow row,
+        Settings? settings,
+        CancellationToken cancellationToken = default);
+
+    Task<AnchorSearchResult> IterateAnchorSearchAsync(
+        string query,
+        int? year,
+        Settings? settings,
+        CancellationToken cancellationToken = default);
+
+    Task<SelectAnchorResult> SelectAnchorAsync(
+        IReadOnlyList<ResolvedRow> rows,
+        string groupKey,
+        Candidate candidate,
+        Settings? settings,
+        CancellationToken cancellationToken = default);
+
+    Task<EditRowResult> EditRowAsync(
+        IReadOnlyList<ResolvedRow> rows,
+        string rowId,
+        EditRowOverrides overrides,
+        Settings? settings,
+        CancellationToken cancellationToken = default);
+
+    // build_plan + undo_batch are added in slice 4 with the Apply-time UI.
 
     // ---- Streaming RPC method ----
 

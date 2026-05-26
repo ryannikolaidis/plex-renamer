@@ -165,6 +165,65 @@ internal sealed class FakeEngineClient : IEngineClient
         return Task.FromResult(ParseResolveResultToReturn);
     }
 
+    public TmdbSearchResult TmdbSearchResultToReturn { get; set; } = new() { Candidates = new List<Candidate>() };
+    public FindByImdbResult? FindByImdbResultToReturn { get; set; }
+    public AnchorSearchResult AnchorSearchResultToReturn { get; set; } = new() { Candidates = new List<Candidate>() };
+    public SelectAnchorResult SelectAnchorResultToReturn { get; set; } = new() { Rows = new List<ResolvedRow>() };
+    public EditRowResult EditRowResultToReturn { get; set; } = new() { Rows = new List<ResolvedRow>() };
+
+    public Task<TmdbSearchResult> SearchTmdbFreeAsync(
+        string query, string kind, Settings? settings, CancellationToken cancellationToken = default)
+    {
+        CallsMade.Add($"SearchTmdbFreeAsync(query={query}, kind={kind})");
+        return Task.FromResult(TmdbSearchResultToReturn);
+    }
+
+    public Task<FindByImdbResult> FindByImdbAsync(
+        string imdbId, ResolvedRow row, Settings? settings, CancellationToken cancellationToken = default)
+    {
+        CallsMade.Add($"FindByImdbAsync(imdbId={imdbId})");
+        if (FindByImdbResultToReturn == null)
+        {
+            // Synthesize a placeholder candidate so callers that don't set the fake's
+            // response still get a valid record back.
+            return Task.FromResult(new FindByImdbResult
+            {
+                Candidate = new Candidate
+                {
+                    AnchorKind = "imdb",
+                    AnchorId = imdbId,
+                    Kind = "movie",
+                    Title = row.Parsed.TitleCandidate ?? string.Empty,
+                    Confidence = 0.55,
+                },
+            });
+        }
+        return Task.FromResult(FindByImdbResultToReturn);
+    }
+
+    public Task<AnchorSearchResult> IterateAnchorSearchAsync(
+        string query, int? year, Settings? settings, CancellationToken cancellationToken = default)
+    {
+        CallsMade.Add($"IterateAnchorSearchAsync(query={query})");
+        return Task.FromResult(AnchorSearchResultToReturn);
+    }
+
+    public Task<SelectAnchorResult> SelectAnchorAsync(
+        IReadOnlyList<ResolvedRow> rows, string groupKey, Candidate candidate,
+        Settings? settings, CancellationToken cancellationToken = default)
+    {
+        CallsMade.Add($"SelectAnchorAsync(groupKey={groupKey})");
+        return Task.FromResult(SelectAnchorResultToReturn);
+    }
+
+    public Task<EditRowResult> EditRowAsync(
+        IReadOnlyList<ResolvedRow> rows, string rowId, EditRowOverrides overrides,
+        Settings? settings, CancellationToken cancellationToken = default)
+    {
+        CallsMade.Add($"EditRowAsync(rowId={rowId})");
+        return Task.FromResult(EditRowResultToReturn);
+    }
+
     public async IAsyncEnumerable<ApplyEvent> ApplyPlanAsync(
         PlanOp plan,
         bool cleanup,

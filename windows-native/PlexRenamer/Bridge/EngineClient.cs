@@ -137,6 +137,68 @@ public sealed class EngineClient : IEngineClient
             cancellationToken);
     }
 
+    public Task<TmdbSearchResult> SearchTmdbFreeAsync(
+        string query,
+        string kind,
+        Settings? settings,
+        CancellationToken cancellationToken = default)
+    {
+        return CallAsync<TmdbSearchResult>(
+            "search_tmdb_free",
+            new { query, kind, settings },
+            cancellationToken);
+    }
+
+    public Task<FindByImdbResult> FindByImdbAsync(
+        string imdbId,
+        ResolvedRow row,
+        Settings? settings,
+        CancellationToken cancellationToken = default)
+    {
+        return CallAsync<FindByImdbResult>(
+            "find_by_imdb",
+            new { imdb_id = imdbId, row, settings },
+            cancellationToken);
+    }
+
+    public Task<AnchorSearchResult> IterateAnchorSearchAsync(
+        string query,
+        int? year,
+        Settings? settings,
+        CancellationToken cancellationToken = default)
+    {
+        return CallAsync<AnchorSearchResult>(
+            "iterate_anchor_search",
+            new { query, year, settings },
+            cancellationToken);
+    }
+
+    public Task<SelectAnchorResult> SelectAnchorAsync(
+        IReadOnlyList<ResolvedRow> rows,
+        string groupKey,
+        Candidate candidate,
+        Settings? settings,
+        CancellationToken cancellationToken = default)
+    {
+        return CallAsync<SelectAnchorResult>(
+            "select_anchor",
+            new { rows, group_key = groupKey, candidate, settings },
+            cancellationToken);
+    }
+
+    public Task<EditRowResult> EditRowAsync(
+        IReadOnlyList<ResolvedRow> rows,
+        string rowId,
+        EditRowOverrides overrides,
+        Settings? settings,
+        CancellationToken cancellationToken = default)
+    {
+        return CallAsync<EditRowResult>(
+            "edit_row",
+            new { rows, row_id = rowId, overrides, settings },
+            cancellationToken);
+    }
+
     public async IAsyncEnumerable<ApplyEvent> ApplyPlanAsync(
         PlanOp plan,
         bool cleanup,
