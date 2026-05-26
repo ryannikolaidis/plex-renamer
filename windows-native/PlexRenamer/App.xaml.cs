@@ -1,4 +1,6 @@
 using System;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Windows;
 using PlexRenamer.Bridge;
 using Wpf.Ui;
@@ -20,8 +22,27 @@ public partial class App : Application
     /// </summary>
     public static IEngineClient EngineClient { get; private set; } = null!;
 
+    // OutputType=WinExe detaches stdout from the parent terminal. Re-attach
+    // to the launching console so --version prints visibly when the binary
+    // is invoked from PowerShell / cmd; without this the version string is
+    // discarded and the post-NSIS smoke can't observe the exit cleanly.
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AttachConsole(int dwProcessId);
+
+    private const int ATTACH_PARENT_PROCESS = -1;
+
     protected override void OnStartup(StartupEventArgs e)
     {
+        if (e.Args.Length > 0 && (e.Args[0] == "--version" || e.Args[0] == "-v"))
+        {
+            AttachConsole(ATTACH_PARENT_PROCESS);
+            var version =
+                Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
+            Console.WriteLine($"plex-renamer {version}");
+            Shutdown(0);
+            return;
+        }
+
         base.OnStartup(e);
 
         // Apply WPF-UI theming. The system-default mode gives us Light/Dark

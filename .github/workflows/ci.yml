@@ -72,14 +72,40 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: uv run pytest -v
 
-      - name: Set up .NET 8 (Windows only)
+      - name: Detect WPF-relevant changes (Windows only)
         if: runner.os == 'Windows'
+        id: wpf_changed
+        uses: dorny/paths-filter@v3
+        with:
+          # The WPF build / test step is the slowest part of the Windows
+          # CI job (~2-3 min for restore + build + test). Skip it on
+          # pushes that don't touch:
+          #   - the WPF code itself,
+          #   - the daemon (whose protocol the WPF code mirrors),
+          #   - the protocol doc,
+          #   - the packaging glue that drives the Windows build
+          #     (Makefile, release.yml, ci.yml, NSIS script, Windows
+          #     PyInstaller specs) — a regression in those files breaks
+          #     the WPF surface even when no C# / daemon code changed.
+          filters: |
+            wpf:
+              - 'windows-native/**'
+              - 'src/plex_renamer/daemon/**'
+              - 'docs/win-native-bridge.md'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/release.yml'
+              - 'packaging/installer/**'
+              - 'packaging/windows/**'
+
+      - name: Set up .NET 8 (Windows only, WPF-relevant changes)
+        if: runner.os == 'Windows' && steps.wpf_changed.outputs.wpf == 'true'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
 
-      - name: Build and test windows-native (Windows only)
-        if: runner.os == 'Windows'
+      - name: Build and test windows-native (Windows only, WPF-relevant changes)
+        if: runner.os == 'Windows' && steps.wpf_changed.outputs.wpf == 'true'
         shell: bash
         run: |
           cd windows-native

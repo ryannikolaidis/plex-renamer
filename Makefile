@@ -24,12 +24,15 @@ test:
 #   - dist/plex-renamer-cli/            (CLI one-folder bundle)
 #   - dist/plex-renamer.dmg             (installer wrapping both)
 #
-# ``build-win`` produces:
-#   - dist/plex-renamer-cli/            (CLI one-folder bundle with .exe)
-#   - dist/plex-renamer-gui/            (GUI one-folder bundle with .exe)
-# The NSIS installer (``plex-renamer-setup.exe``) is built by CI;
-# local-Windows users with NSIS installed can run ``makensis
-# packaging/installer/nsis_script.nsi`` themselves.
+# ``build-win`` produces three artifact directories:
+#   - dist/plex-renamer-cli/            (CLI one-folder bundle, PyInstaller)
+#   - dist/plex-renamer-engined/        (engine sidecar daemon binary, PyInstaller)
+#   - dist/plex-renamer-gui/PlexRenamer.exe  (WPF .NET 8 GUI, dotnet publish)
+# The Windows installer (``plex-renamer-setup.exe``) is built by CI;
+# local-Windows users with NSIS + .NET 8 SDK installed can run
+# ``makensis packaging/installer/nsis_script.nsi`` after this target.
+# The legacy Qt GUI .exe no longer ships on Windows — replaced by the
+# WPF native shell under ``windows-native/PlexRenamer.csproj``.
 build-mac:
 	uv run pyinstaller packaging/macos/plex-renamer.spec --distpath dist --workpath build --noconfirm
 	mkdir -p dist/dmg-staging
@@ -38,8 +41,11 @@ build-mac:
 	hdiutil create -volname plex-renamer -srcfolder dist/dmg-staging -ov -format UDZO dist/plex-renamer.dmg
 
 build-win:
-	uv run pyinstaller packaging/windows/plex-renamer.spec --distpath dist --workpath build --noconfirm
-	@echo "build-win: PyInstaller bundles built under dist/. To produce the NSIS installer, run:"
+	uv run pyinstaller packaging/windows/plex-renamer-cli.spec --distpath dist --workpath build --noconfirm
+	uv run pyinstaller packaging/windows/plex-renamer-engined.spec --distpath dist --workpath build --noconfirm
+	rm -rf dist/plex-renamer-gui
+	dotnet publish windows-native/PlexRenamer/PlexRenamer.csproj -c Release -r win-x64 --self-contained true -o dist/plex-renamer-gui
+	@echo "build-win: artifacts under dist/. To produce the NSIS installer, run:"
 	@echo "    makensis -DAPP_VERSION=\$$(uv run python -c \"import importlib.util; s=importlib.util.spec_from_file_location('h','packaging/pyinstaller_spec.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.app_version())\") packaging/installer/nsis_script.nsi"
 	@echo "(requires NSIS on PATH; CI installs it via chocolatey)."
 

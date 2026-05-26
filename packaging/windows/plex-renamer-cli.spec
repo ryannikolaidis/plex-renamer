@@ -1,18 +1,22 @@
-# PyInstaller spec for Windows.
+# PyInstaller spec for the Windows CLI.
 #
-# Builds two artifacts under ``dist/``:
+# Builds the one-folder CLI bundle under ``dist/plex-renamer-cli/``:
 #
-#   1. ``dist/plex-renamer-cli/plex-renamer.exe`` — a one-folder CLI
-#      bundle. Used by the release smoke test to assert
-#      ``plex-renamer.exe --version`` works inside a built binary.
+#   dist/plex-renamer-cli/plex-renamer.exe
+#   dist/plex-renamer-cli/_internal/...
 #
-#   2. ``dist/plex-renamer-gui/plex-renamer-gui.exe`` — a one-folder GUI
-#      bundle. The NSIS installer at ``packaging/installer/nsis_script.nsi``
-#      packages this folder into ``plex-renamer-setup.exe``.
+# The Windows release no longer ships the Qt GUI .exe — the WPF native
+# shell from ``windows-native/PlexRenamer.csproj`` is the GUI on
+# Windows. The NSIS installer at
+# ``packaging/installer/nsis_script.nsi`` packages this CLI bundle plus
+# the WPF .exe (``dist/plex-renamer-gui/PlexRenamer.exe``) plus the
+# engine sidecar binary
+# (``dist/plex-renamer-engined/plex-renamer-engined.exe`` built from
+# ``packaging/windows/plex-renamer-engined.spec``).
 #
 # Run from the project root:
 #
-#     uv run pyinstaller packaging/windows/plex-renamer.spec --noconfirm
+#     uv run pyinstaller packaging/windows/plex-renamer-cli.spec --noconfirm
 
 import importlib.util
 from pathlib import Path
@@ -30,7 +34,6 @@ _helper = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_helper)
 
 cli_analysis_kwargs = _helper.cli_analysis_kwargs
-gui_analysis_kwargs = _helper.gui_analysis_kwargs
 
 ICON_PATH = PROJECT_ROOT / "packaging" / "icons" / "plex-renamer.ico"
 ICON_ARG = str(ICON_PATH) if ICON_PATH.exists() else None
@@ -65,39 +68,4 @@ cli_coll = COLLECT(
     upx=False,
     upx_exclude=[],
     name="plex-renamer-cli",
-)
-
-# --- GUI executable ------------------------------------------------------
-
-gui_a = Analysis(**gui_analysis_kwargs())
-gui_pyz = PYZ(gui_a.pure)
-gui_exe = EXE(
-    gui_pyz,
-    gui_a.scripts,
-    [],
-    exclude_binaries=True,
-    name="plex-renamer-gui",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    # ``console=False`` makes this a windowed app — no flashing terminal
-    # behind the GUI window on launch. This is the Windows analogue of
-    # the macOS BUNDLE step.
-    console=False,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon=ICON_ARG,
-)
-gui_coll = COLLECT(
-    gui_exe,
-    gui_a.binaries,
-    gui_a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name="plex-renamer-gui",
 )
