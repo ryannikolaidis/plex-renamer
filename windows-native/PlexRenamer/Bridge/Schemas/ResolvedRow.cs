@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace PlexRenamer.Bridge.Schemas;
 
@@ -72,8 +73,19 @@ public sealed record Candidate
 public sealed record Episode
 {
     public required int Season { get; init; }
-    public required int Episode_ { get; init; } // 'episode' would clash with the type name
+
+    // The wire key is `episode` (matching the daemon's emitted JSON). The C#
+    // property cannot be named `Episode` because that conflicts with the
+    // containing record's own name (CS0542). The default snake_case naming
+    // policy would map a property named `EpisodeNumber` to `episode_number`,
+    // which would not match the wire. Use [JsonPropertyName("episode")] to
+    // pin the wire key explicitly.
+    [JsonPropertyName("episode")]
+    public required int Number { get; init; }
+
     public required string Title { get; init; }
+
+    [JsonPropertyName("air_date")]
     public string? AirDate { get; init; }
 }
 

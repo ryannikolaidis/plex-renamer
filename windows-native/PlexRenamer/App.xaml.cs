@@ -33,13 +33,19 @@ public partial class App : Application
         EngineClient.UnexpectedExit += OnEngineUnexpectedExit;
     }
 
-    protected override async void OnExit(ExitEventArgs e)
+    protected override void OnExit(ExitEventArgs e)
     {
+        // WPF's OnExit is sync-only; `async void` would let the framework
+        // tear down the process before DisposeAsync finishes, leaving the
+        // sidecar orphaned. Block synchronously with a 5s timeout so the
+        // sidecar gets a clean shutdown signal but a hung dispose doesn't
+        // hold up app exit forever.
         try
         {
             if (EngineClient is not null)
             {
-                await EngineClient.DisposeAsync().ConfigureAwait(false);
+                var disposeTask = EngineClient.DisposeAsync().AsTask();
+                disposeTask.Wait(TimeSpan.FromSeconds(5));
             }
         }
         catch
@@ -51,19 +57,24 @@ public partial class App : Application
 
     private void OnEngineUnexpectedExit(object? sender, EngineExitedEventArgs e)
     {
-        // Re-marshal to the UI thread to surface the modal.
-        Dispatcher.BeginInvoke(() =>
+        // Re-marshal to the UI thread to surface the modal, then trigger the
+        // restart on OK. The MainWindow's own UnexpectedExit handler already
+        // resets _engineStarted and disables Preview/Apply; this modal owns
+        // the actual restart trigger so the user can decide when to retry.
+        Dispatcher.BeginInvoke(async () =>
         {
             var detail = e.Stderr is { Length: > 0 } ? $"\n\nStderr:\n{e.Stderr}" : string.Empty;
-            System.Windows.MessageBox.Show(
+            var result = System.Windows.MessageBox.Show(
                 $"The engine sidecar exited unexpectedly (code {e.ExitCode}).{detail}\n\n" +
-                "Click OK to restart the sidecar. Preview / Apply are disabled until it's back.",
+                "Click OK to restart the sidecar. Cancel keeps Preview / Apply disabled.",
                 "Engine sidecar died",
-                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxButton.OKCancel,
                 System.Windows.MessageBoxImage.Warning);
-            // The Restart button on the modal would call EngineClient.RestartAsync.
-            // Slice 2 ships the modal as an OK acknowledgment with a restart on click;
-            // a richer recovery UI is part of slice 3 / 4 polish.
+            if (result == System.Windows.MessageBoxResult.OK
+                && Current.MainWindow is MainWindow mainWindow)
+            {
+                await mainWindow.RestartEngineAsync().ConfigureAwait(false);
+            }
         });
     }
 }

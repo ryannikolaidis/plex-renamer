@@ -47,6 +47,7 @@ public sealed class EngineClient : IEngineClient
     private Process? _process;
     private long _nextRequestId;
     private bool _shutdownRequested;
+    private System.Text.StringBuilder? _stderrBuffer;
 
     // Pending one-shot responses keyed on request id.
     private readonly ConcurrentDictionary<long, TaskCompletionSource<JsonElement>> _pending = new();
@@ -99,6 +100,12 @@ public sealed class EngineClient : IEngineClient
             }
             _process = process;
             _ = Task.Run(() => ReadStdoutLoopAsync(process), cancellationToken);
+            // Drain stderr continuously into a buffer; otherwise the pipe
+            // fills (~64 KB on Windows) and the sidecar blocks on its next
+            // write to stderr. The buffer is read on OnProcessExited so the
+            // unexpected-exit modal can include the daemon's last words.
+            _stderrBuffer = new System.Text.StringBuilder();
+            _ = Task.Run(() => DrainStderrLoopAsync(process), cancellationToken);
             return Task.CompletedTask;
         }
     }
@@ -295,6 +302,30 @@ public sealed class EngineClient : IEngineClient
         }
     }
 
+    private async Task DrainStderrLoopAsync(Process process)
+    {
+        var reader = process.StandardError;
+        try
+        {
+            while (!process.HasExited)
+            {
+                var line = await reader.ReadLineAsync().ConfigureAwait(false);
+                if (line == null)
+                {
+                    break;
+                }
+                lock (_spawnLock)
+                {
+                    _stderrBuffer?.AppendLine(line);
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // Reader closed; nothing useful to do.
+        }
+    }
+
     private void DispatchMessage(string line)
     {
         try
@@ -404,12 +435,11 @@ public sealed class EngineClient : IEngineClient
         // error then fire the public event so the UI can render a
         // sidecar-died modal with a Restart button.
         var process = (Process)sender!;
-        var stderr = string.Empty;
-        try
+        string? stderr;
+        lock (_spawnLock)
         {
-            stderr = process.StandardError.ReadToEnd();
+            stderr = _stderrBuffer?.ToString();
         }
-        catch { /* ignore */ }
         FailAllPending(new BridgeException($"Sidecar exited unexpectedly (code {process.ExitCode})."));
         UnexpectedExit?.Invoke(this, new EngineExitedEventArgs
         {

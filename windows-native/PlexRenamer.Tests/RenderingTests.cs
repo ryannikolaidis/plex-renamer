@@ -66,4 +66,25 @@ public class RenderingTests
         // Apply is rendered-but-disabled in slice 2; slice 4 wires it.
         Assert.False(bar.IsApplyEnabled);
     }
+
+    [StaFact]
+    public void SettingsDialog_RendersWithNonZeroDimensions()
+    {
+        // SettingsDialog is a FluentWindow (not a UserControl). It still
+        // needs the [StaFact] rendering bar: the brief mandates rendering
+        // tests for every load-bearing control to catch the "squished"
+        // defect class, and a settings dialog with zero-size text boxes
+        // is exactly the failure mode this discipline catches.
+        var initial = new PlexRenamer.Bridge.Schemas.Settings
+        {
+            TmdbApiKey = "test",
+            MoviesRoot = @"C:\Movies",
+        };
+        var dialog = new PlexRenamer.Views.SettingsDialog(initial);
+        // FluentWindow has size constraints in its constructor (Width=520,
+        // Height=480). Force layout against that intrinsic size.
+        MeasureAndArrange(dialog, new Size(520, 480));
+        Assert.True(dialog.ActualWidth > 0, "SettingsDialog width must be non-zero after layout.");
+        Assert.True(dialog.ActualHeight > 0, "SettingsDialog height must be non-zero after layout.");
+    }
 }
