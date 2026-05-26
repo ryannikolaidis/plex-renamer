@@ -38,6 +38,13 @@
             </Grid>
         </Grid>
 
-        <views:ActionBar x:Name="ActionBarControl" Grid.Row="2" Margin="16,8,16,16" />
+        <Grid Grid.Row="2" Margin="16,8,16,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <views:LibraryRootsInline x:Name="LibraryRootsControl" Grid.Column="0" />
+            <views:ActionBar x:Name="ActionBarControl" Grid.Column="1" />
+        </Grid>
     </Grid>
 </ui:FluentWindow>

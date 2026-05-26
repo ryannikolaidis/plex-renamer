@@ -1,0 +1,113 @@
+<ui:FluentWindow x:Class="PlexRenamer.Views.EditPane"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 Title="Edit row"
+                 Width="640"
+                 Height="680"
+                 WindowStartupLocation="CenterOwner"
+                 WindowBackdropType="Mica"
+                 ExtendsContentIntoTitleBar="True">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0" Title="Edit row" />
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,16,0,0">
+            <StackPanel>
+                <TextBlock x:Name="SourcePathText"
+                           FontWeight="SemiBold"
+                           TextWrapping="Wrap"
+                           Margin="0,0,0,12"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+
+                <TextBlock Text="TMDB free-text search" FontWeight="SemiBold" />
+                <Grid Margin="0,4,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <ui:TextBox x:Name="TmdbQueryBox"
+                                Grid.Column="0"
+                                PlaceholderText="Type title and press Enter…"
+                                KeyDown="OnTmdbQueryKeyDown" />
+                    <ui:Button x:Name="TmdbSearchButton"
+                               Grid.Column="1"
+                               Content="Search"
+                               Appearance="Secondary"
+                               Margin="6,0,0,0"
+                               Click="OnTmdbSearchClick" />
+                </Grid>
+                <ListBox x:Name="TmdbResultsListBox"
+                         Height="120"
+                         BorderThickness="1"
+                         BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                         HorizontalContentAlignment="Stretch"
+                         Margin="0,0,0,12"
+                         SelectionChanged="OnTmdbResultSelectionChanged">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Margin="6,2" Orientation="Horizontal">
+                                <TextBlock Text="{Binding Kind}"
+                                           Margin="0,0,6,0"
+                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                           FontSize="11" />
+                                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
+                                <TextBlock Text=" (" Margin="2,0,0,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="{Binding Year, TargetNullValue='----'}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text=")" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <TextBlock Text="IMDb ID" FontWeight="SemiBold" />
+                <Grid Margin="0,4,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <ui:TextBox x:Name="ImdbIdBox"
+                                Grid.Column="0"
+                                PlaceholderText="tt0000000" />
+                    <ui:Button x:Name="ImdbLookupButton"
+                               Grid.Column="1"
+                               Content="Look up"
+                               Appearance="Secondary"
+                               Margin="6,0,0,0"
+                               Click="OnImdbLookupClick" />
+                </Grid>
+
+                <TextBlock Text="Manual overrides" FontWeight="SemiBold" Margin="0,8,0,4" />
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="100" />
+                    </Grid.ColumnDefinitions>
+                    <ui:TextBox x:Name="ManualTitleBox" Grid.Column="0" PlaceholderText="Title" Margin="0,0,4,0" />
+                    <ui:TextBox x:Name="ManualYearBox" Grid.Column="1" PlaceholderText="Year" />
+                </Grid>
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <ui:TextBox x:Name="ManualSeasonBox" Grid.Column="0" PlaceholderText="Season (TV)" Margin="0,0,4,0" />
+                    <ui:TextBox x:Name="ManualEpisodeBox" Grid.Column="1" PlaceholderText="Episode (TV)" Margin="4,0,0,0" />
+                </Grid>
+                <ui:TextBox x:Name="ManualEditionBox" PlaceholderText="Edition (e.g. Director's Cut)" Margin="0,0,0,8" />
+
+                <CheckBox x:Name="SkipCheckbox" Content="Skip this row in apply" Margin="0,8,0,0" />
+            </StackPanel>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <ui:Button x:Name="CancelButton" Content="Cancel" Appearance="Secondary" Margin="0,0,8,0" Click="OnCancelClick" />
+            <ui:Button x:Name="SaveButton" Content="Save" Appearance="Primary" Click="OnSaveClick" />
+        </StackPanel>
+    </Grid>
+</ui:FluentWindow>

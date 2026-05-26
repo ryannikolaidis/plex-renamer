@@ -1,0 +1,38 @@
+<UserControl x:Class="PlexRenamer.Views.LibraryRootsInline"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" MinHeight="40">
+        <TextBlock Text="Movies:"
+                   VerticalAlignment="Center"
+                   Margin="0,0,4,0"
+                   FontWeight="SemiBold" />
+        <TextBlock x:Name="MoviesRootText"
+                   VerticalAlignment="Center"
+                   MaxWidth="240"
+                   TextTrimming="CharacterEllipsis"
+                   Text="(not set)"
+                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+        <ui:Button x:Name="ChangeMoviesButton"
+                   Content="Change…"
+                   Appearance="Secondary"
+                   Margin="6,0,16,0"
+                   Click="OnChangeMoviesClick" />
+
+        <TextBlock Text="TV:"
+                   VerticalAlignment="Center"
+                   Margin="0,0,4,0"
+                   FontWeight="SemiBold" />
+        <TextBlock x:Name="TvRootText"
+                   VerticalAlignment="Center"
+                   MaxWidth="240"
+                   TextTrimming="CharacterEllipsis"
+                   Text="(not set)"
+                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+        <ui:Button x:Name="ChangeTvButton"
+                   Content="Change…"
+                   Appearance="Secondary"
+                   Margin="6,0,0,0"
+                   Click="OnChangeTvClick" />
+    </StackPanel>
+</UserControl>

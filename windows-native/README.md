@@ -84,4 +84,12 @@ There is no automated pixel-diff testing in this slice (explicitly out of scope)
 
 ## Future slices
 
-This shell is iteratively built. The action bar's Apply button + collision-review / cleanup-confirm modals + run report widget land in subsequent slices. The full per-row edit pane, show-anchor picker dialog, and confidence badge land before Apply is enabled. See the project brief at `~/.agent-coding/projects/plex-renamer-win-native/brief.md` for the full slice chain.
+This shell is iteratively built. The action bar's Apply button + collision-review / cleanup-confirm modals + run report widget land in the apply-time UI slice. The per-row edit pane, show-anchor picker dialog, confidence badge, library-roots inline editing, and first-run TMDB key prompt ship in this slice (resolve-time UI); Apply stays disabled until the safety modals exist.
+
+## Resolve-time flow
+
+- **First-run TMDB key prompt**: on the first launch with no key persisted in `config.json`, the WPF app opens `TmdbKeyPrompt` modal asking for the API key. Saving the key routes through the daemon's `save_settings` RPC so the daemon's TMDB-client cache stays consistent.
+- **Show-anchor picker** (TV groups with no resolved candidate): double-clicking a TV group's source rows opens `ShowAnchorPicker`. The picker drives `iterate_anchor_search` on every Enter; when the literal query returns zero results, the daemon's cleaned-variant retry chain produces hits and the dialog surfaces "Showing results for X instead" via the `variant_used` / `variant_original` signals. Each candidate exposes a "View on TMDB" / "View on IMDb" hyperlink that opens the canonical record in the system browser.
+- **Per-row edit pane**: double-clicking a row in the source panel opens `EditPane` with TMDB free-text search (`search_tmdb_free`), IMDb paste (`find_by_imdb` — TMDB miss synthesizes an IMDb-anchored Candidate at confidence 0.55 matching the Qt path's behavior), and manual override fields (title / year / season / episode / edition / skip). Save calls `edit_row` and the result rows refresh both panels.
+- **Library-roots inline editing**: the bottom bar shows the current movies/TV roots with `Change…` buttons that open `OpenFolderDialog`. Changes save through `save_settings` so the daemon invalidates its TMDB client when needed.
+- **Confidence badge**: each row's resolved candidate renders a green/yellow/red badge via the bands documented in `INVARIANTS.md` (>=0.85 auto, >=0.60 review, <0.60 unresolved).
