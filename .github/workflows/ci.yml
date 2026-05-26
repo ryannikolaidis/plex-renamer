@@ -79,13 +79,24 @@ jobs:
         with:
           # The WPF build / test step is the slowest part of the Windows
           # CI job (~2-3 min for restore + build + test). Skip it on
-          # pushes that don't touch the WPF code, the daemon (whose
-          # protocol the WPF code mirrors), or the protocol doc itself.
+          # pushes that don't touch:
+          #   - the WPF code itself,
+          #   - the daemon (whose protocol the WPF code mirrors),
+          #   - the protocol doc,
+          #   - the packaging glue that drives the Windows build
+          #     (Makefile, release.yml, ci.yml, NSIS script, Windows
+          #     PyInstaller specs) — a regression in those files breaks
+          #     the WPF surface even when no C# / daemon code changed.
           filters: |
             wpf:
               - 'windows-native/**'
               - 'src/plex_renamer/daemon/**'
               - 'docs/win-native-bridge.md'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/release.yml'
+              - 'packaging/installer/**'
+              - 'packaging/windows/**'
 
       - name: Set up .NET 8 (Windows only, WPF-relevant changes)
         if: runner.os == 'Windows' && steps.wpf_changed.outputs.wpf == 'true'

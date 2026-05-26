@@ -43,7 +43,8 @@ build-mac:
 build-win:
 	uv run pyinstaller packaging/windows/plex-renamer-cli.spec --distpath dist --workpath build --noconfirm
 	uv run pyinstaller packaging/windows/plex-renamer-engined.spec --distpath dist --workpath build --noconfirm
-	dotnet publish windows-native/PlexRenamer.sln -c Release -r win-x64 --self-contained false -o dist/plex-renamer-gui
+	rm -rf dist/plex-renamer-gui
+	dotnet publish windows-native/PlexRenamer/PlexRenamer.csproj -c Release -r win-x64 --self-contained true -o dist/plex-renamer-gui
 	@echo "build-win: artifacts under dist/. To produce the NSIS installer, run:"
 	@echo "    makensis -DAPP_VERSION=\$$(uv run python -c \"import importlib.util; s=importlib.util.spec_from_file_location('h','packaging/pyinstaller_spec.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.app_version())\") packaging/installer/nsis_script.nsi"
 	@echo "(requires NSIS on PATH; CI installs it via chocolatey)."

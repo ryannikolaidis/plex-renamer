@@ -112,8 +112,36 @@ jobs:
 
       - name: dotnet publish WPF native shell (Windows)
         if: runner.os == 'Windows'
+        # Target the GUI csproj explicitly (not the .sln). A solution-level
+        # publish would also publish PlexRenamer.Tests into the same output
+        # directory and the NSIS glob would ship xUnit + test SDK assemblies
+        # into Program Files. Remove any prior PyInstaller-era artifacts at
+        # this path before publishing so stale Qt-bundle files cannot leak
+        # into the installer. Self-contained so the installed binary does
+        # not require the user to install the .NET 8 Desktop Runtime
+        # separately; this matches the brief's release-shape constraint at
+        # the cost of ~75 MB installer bloat.
+        shell: pwsh
         run: |
-          dotnet publish windows-native/PlexRenamer.sln -c Release -r win-x64 --self-contained false -o dist/plex-renamer-gui
+          if (Test-Path dist/plex-renamer-gui) { Remove-Item -Recurse -Force dist/plex-renamer-gui }
+          dotnet publish windows-native/PlexRenamer/PlexRenamer.csproj `
+            -c Release -r win-x64 --self-contained true `
+            -o dist/plex-renamer-gui
+
+      - name: Verify Windows artifact tree (Windows)
+        if: runner.os == 'Windows'
+        # Fail early if any of the three Windows producers dropped its
+        # expected entry point — easier to debug here than as a missing-File
+        # error from makensis three steps later.
+        shell: pwsh
+        run: |
+          foreach ($p in @(
+            'dist/plex-renamer-cli/plex-renamer.exe',
+            'dist/plex-renamer-engined/plex-renamer-engined.exe',
+            'dist/plex-renamer-gui/PlexRenamer.exe'
+          )) {
+            if (-not (Test-Path $p)) { throw "Missing expected artifact: $p" }
+          }
 
       - name: Smoke-test CLI (Windows)
         if: runner.os == 'Windows'
@@ -151,6 +179,32 @@ jobs:
         # report ``Can't open script ".1.0"``. Quoting forces a single
         # native-command argument across the dot-separated version.
         run: makensis "-DAPP_VERSION=${{ steps.app_version.outputs.version }}" packaging/installer/nsis_script.nsi
+
+      - name: Smoke-test installed WPF binary (Windows)
+        if: runner.os == 'Windows'
+        # Runs the NSIS installer silently, launches the installed
+        # PlexRenamer.exe with --version, asserts a clean exit, then
+        # uninstalls. Exercises the full release chain: NSIS file layout,
+        # the EngineClient sibling-path contract is bypassed because
+        # --version short-circuits before constructing EngineClient, but
+        # the binary must load WPF + WPF-UI assemblies from the installed
+        # location, which catches missing-dependency classes that a
+        # pre-install launch would miss.
+        shell: pwsh
+        run: |
+          Start-Process -FilePath dist\plex-renamer-setup.exe `
+            -ArgumentList "/S" -Wait -NoNewWindow
+          $exe = Join-Path $env:ProgramFiles "plex-renamer\gui\PlexRenamer.exe"
+          if (-not (Test-Path $exe)) { throw "Installed binary not at $exe" }
+          $output = & $exe --version 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "PlexRenamer.exe --version exited $LASTEXITCODE; output: $output"
+          }
+          Write-Host "installed smoke OK: $output"
+          $uninstall = Join-Path $env:ProgramFiles "plex-renamer\uninstall.exe"
+          if (Test-Path $uninstall) {
+            Start-Process -FilePath $uninstall -ArgumentList "/S" -Wait -NoNewWindow
+          }
 
       - name: Upload Windows artifacts
         if: runner.os == 'Windows'
