@@ -224,6 +224,34 @@ internal sealed class FakeEngineClient : IEngineClient
         return Task.FromResult(EditRowResultToReturn);
     }
 
+    public BuildPlanResult BuildPlanResultToReturn { get; set; } = new()
+    {
+        Plan = new PlanOp
+        {
+            Ops = new List<RenameOp>(),
+            MoviesRoot = "/m", TvRoot = "/t", InputRoot = "/in",
+        },
+    };
+    public UndoReport UndoReportToReturn { get; set; } = new()
+    {
+        Reverted = 0, MovedToReview = 0, SourcesRecoverable = true,
+    };
+
+    public Task<BuildPlanResult> BuildPlanAsync(
+        IReadOnlyList<ResolvedRow> rows, string? inputRoot, bool applyEditions,
+        Settings? settings, CancellationToken cancellationToken = default)
+    {
+        CallsMade.Add($"BuildPlanAsync(rows={rows.Count}, applyEditions={applyEditions})");
+        return Task.FromResult(BuildPlanResultToReturn);
+    }
+
+    public Task<UndoReport> UndoBatchAsync(
+        string journalPath, CancellationToken cancellationToken = default)
+    {
+        CallsMade.Add($"UndoBatchAsync(journalPath={journalPath})");
+        return Task.FromResult(UndoReportToReturn);
+    }
+
     public async IAsyncEnumerable<ApplyEvent> ApplyPlanAsync(
         PlanOp plan,
         bool cleanup,

@@ -199,6 +199,29 @@ public sealed class EngineClient : IEngineClient
             cancellationToken);
     }
 
+    public Task<BuildPlanResult> BuildPlanAsync(
+        IReadOnlyList<ResolvedRow> rows,
+        string? inputRoot,
+        bool applyEditions,
+        Settings? settings,
+        CancellationToken cancellationToken = default)
+    {
+        return CallAsync<BuildPlanResult>(
+            "build_plan",
+            new { rows, input_root = inputRoot, apply_editions = applyEditions, settings },
+            cancellationToken);
+    }
+
+    public Task<UndoReport> UndoBatchAsync(
+        string journalPath,
+        CancellationToken cancellationToken = default)
+    {
+        return CallAsync<UndoReport>(
+            "undo_batch",
+            new { journal_path = journalPath },
+            cancellationToken);
+    }
+
     public async IAsyncEnumerable<ApplyEvent> ApplyPlanAsync(
         PlanOp plan,
         bool cleanup,
