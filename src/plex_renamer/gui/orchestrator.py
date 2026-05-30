@@ -177,6 +177,12 @@ class Orchestrator(QObject):
         main_window.library_roots_changed.connect(self.update_library_roots)  # type: ignore[attr-defined]
         run_report = main_window.run_report_widget()  # type: ignore[attr-defined]
         self.resolve_errors_changed.connect(run_report.set_resolve_errors)
+        # Plumb the streaming-apply path: the MainWindow routes Apply
+        # clicks through this orchestrator's prepare_apply +
+        # build_run_report, with apply_plan_iter running on a worker
+        # thread so the GUI stays responsive during file copies.
+        if hasattr(main_window, "set_apply_adapter"):
+            main_window.set_apply_adapter(self)  # type: ignore[attr-defined]
 
     def update_library_roots(self, movies_root: str, tv_root: str) -> None:
         """Refresh the orchestrator's library roots after a user change.
@@ -797,28 +803,26 @@ class Orchestrator(QObject):
             collision_model.set_collisions(plan.collisions)
         return plan
 
-    def apply(self, item_model: ItemModel, input_root: Path) -> RunReport:
-        """Build a plan from the model and call ``apply_plan``.
+    def prepare_apply(
+        self, item_model: ItemModel, input_root: Path
+    ) -> tuple[RenamePlan | None, RunReport | None]:
+        """Build the plan and handle collisions; return either a ready Plan or an early-exit RunReport.
 
-        This is the function the GUI hands to ``MainWindow(apply_fn=)``.
-        Rows without a candidate are dropped to the skipped list; rows
-        flagged ``skip`` are dropped silently.
+        This is the GUI-thread-safe part of an apply pass: it mutates
+        ``item_model`` (proposed-op stamps, collision model) and either
+        returns a resolved :class:`RenamePlan` ready for the executor,
+        OR a :class:`RunReport` that the GUI should render directly
+        (unresolved collisions blocking the apply).
 
-        When the freshly-built plan has unresolved collisions, the
-        method populates the collision model (so the review widget
-        renders the conflicts) and returns a zero-count
-        :class:`RunReport` WITHOUT calling :func:`apply_plan`. The
-        MainWindow's pre-apply gate refuses the next Apply click until
-        the user resolves each collision; the SECOND Apply rebuilds the
-        plan applying the per-collision actions and proceeds.
+        Exactly one of the two tuple slots is non-None.
+
+        Splitting this out from :meth:`apply` lets the GUI build the
+        plan on the main thread (model mutation must stay there) then
+        hand the resolved plan to a worker thread that consumes the
+        streaming :func:`apply_plan_iter` for live progress events.
         """
         plan, _ = self._build_plan_from_model(item_model, input_root)
 
-        # Surface collisions on the model. If any are unresolved, bail
-        # out without applying — the user resolves via the review panel
-        # and clicks Apply again. We update the model so the review
-        # widget repaints on the first Apply click rather than waiting
-        # for an explicit Preview.
         collision_model = None
         if self._main_window is not None and hasattr(self._main_window, "collision_model"):
             collision_model = self._main_window.collision_model()  # type: ignore[attr-defined]
@@ -829,12 +833,9 @@ class Orchestrator(QObject):
             if unresolved:
                 if collision_model is not None:
                     collision_model.set_collisions(plan.collisions)
-                # Record proposed ops for the clean (non-colliding) rows
-                # so the target panel still renders them while the user
-                # works through the conflicts.
                 for op in plan.ops:
                     item_model.set_proposed_op(op.source, op)
-                return RunReport(
+                early = RunReport(
                     succeeded=0,
                     skipped=len(plan.skipped),
                     errored=0,
@@ -843,18 +844,67 @@ class Orchestrator(QObject):
                         "Unresolved collisions; resolve in the review panel before applying.",
                     ),
                 )
-            # Every remaining collision has an action; rebuild the op
-            # list applying the user's choices.
+                return None, early
             plan = self._apply_collision_actions(plan, actions)
 
-        # Record proposed ops on the model so the target panel + the
-        # reanchor lookup find the corresponding row.
         for op in plan.ops:
             item_model.set_proposed_op(op.source, op)
-        # Clear the collision model: every collision either resolved
-        # (consumed above) or never existed.
         if collision_model is not None:
             collision_model.set_collisions(())
+
+        return plan, None
+
+    def build_run_report(self, plan: RenamePlan, result: object) -> RunReport:
+        """Translate an executor :class:`ApplyResult` into the GUI's :class:`RunReport`.
+
+        Reads the journal to surface per-op error messages. Used by both
+        :meth:`apply` (synchronous path) and the GUI's worker thread
+        (after the streaming :func:`apply_plan_iter` yields its final
+        ``done`` event).
+        """
+        error_messages: list[str] = []
+        try:
+            journal = Journal.load(result.journal_path)  # type: ignore[attr-defined]
+        except (OSError, ValueError):
+            journal = None
+        if journal is not None:
+            for entry in journal.entries:
+                if entry.status == "failed" and entry.error:
+                    error_messages.append(entry.error)
+        return RunReport(
+            succeeded=result.succeeded,  # type: ignore[attr-defined]
+            skipped=len(plan.skipped),
+            errored=result.failed,  # type: ignore[attr-defined]
+            journal_path=result.journal_path,  # type: ignore[attr-defined]
+            error_messages=tuple(error_messages),
+        )
+
+    def apply_journal_dir(self) -> Path:
+        """Journal directory the executor writes into.
+
+        Exposed for the GUI's worker thread, which calls
+        :func:`apply_plan_iter` directly and needs the same path the
+        synchronous :meth:`apply` would have used.
+        """
+        return self._deps.journal_dir
+
+    def apply_cleanup_enabled(self) -> bool:
+        """Whether the deps want cleanup to run after a successful apply."""
+        return self._deps.cleanup_enabled
+
+    def apply(self, item_model: ItemModel, input_root: Path) -> RunReport:
+        """Synchronous apply that returns a :class:`RunReport`.
+
+        Thin wrapper around :meth:`prepare_apply` + the executor's
+        synchronous :func:`apply_plan`. The Qt GUI now goes through
+        :meth:`prepare_apply` + a worker thread iterating
+        :func:`apply_plan_iter`; this method stays as the test surface
+        and the headless entry point.
+        """
+        plan, early = self.prepare_apply(item_model, input_root)
+        if early is not None:
+            return early
+        assert plan is not None  # prepare_apply contract
 
         result = apply_plan(
             plan,
@@ -862,25 +912,7 @@ class Orchestrator(QObject):
             cleanup=self._deps.cleanup_enabled,
             verify_hash=False,
         )
-
-        # Build the GUI-facing report from the ApplyResult.
-        error_messages: list[str] = []
-        try:
-            journal = Journal.load(result.journal_path)
-        except (OSError, ValueError):
-            journal = None
-        if journal is not None:
-            for entry in journal.entries:
-                if entry.status == "failed" and entry.error:
-                    error_messages.append(entry.error)
-
-        return RunReport(
-            succeeded=result.succeeded,
-            skipped=len(plan.skipped),
-            errored=result.failed,
-            journal_path=result.journal_path,
-            error_messages=tuple(error_messages),
-        )
+        return self.build_run_report(plan, result)
 
     @staticmethod
     def _collision_actions_for(collisions, collision_model) -> dict:
