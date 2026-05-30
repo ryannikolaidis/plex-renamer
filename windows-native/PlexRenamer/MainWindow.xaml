@@ -18,18 +18,25 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <ui:TitleBar Grid.Row="0" Title="plex-renamer">
-            <ui:TitleBar.TrailingContent>
-                <ui:Button x:Name="SettingsTitleBarButton"
-                           Appearance="Transparent"
-                           Padding="8"
-                           ToolTip="Settings (Ctrl+,)"
-                           AutomationProperties.Name="Settings"
-                           Click="OnSettingsTitleBarClick">
-                    <ui:SymbolIcon Symbol="Settings24" />
-                </ui:Button>
-            </ui:TitleBar.TrailingContent>
-        </ui:TitleBar>
+        <Grid Grid.Row="0">
+            <ui:TitleBar Title="plex-renamer" />
+            <!-- Settings gear sits in the title-bar strip, right-aligned.
+                 WPF-UI 3.0.5's ui:TitleBar doesn't expose a
+                 TrailingContent slot, so we overlay the button on top of
+                 the title bar within the same Grid row. The button stays
+                 clear of the system caption buttons via the right margin. -->
+            <ui:Button x:Name="SettingsTitleBarButton"
+                       HorizontalAlignment="Right"
+                       VerticalAlignment="Center"
+                       Margin="0,0,148,0"
+                       Appearance="Transparent"
+                       Padding="8"
+                       ToolTip="Settings (Ctrl+,)"
+                       AutomationProperties.Name="Settings"
+                       Click="OnSettingsTitleBarClick">
+                <ui:SymbolIcon Symbol="Settings24" />
+            </ui:Button>
+        </Grid>
 
         <Grid Grid.Row="1" Margin="16,8,16,8">
             <Grid.RowDefinitions>
