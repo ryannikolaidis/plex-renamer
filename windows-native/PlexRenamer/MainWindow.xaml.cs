@@ -193,11 +193,6 @@ public partial class MainWindow : FluentWindow
         }
     }
 
-    private void OnRunReportClose(InfoBar sender, RoutedEventArgs args)
-    {
-        RunReportControl.Clear();
-    }
-
     private async void OnUndoRequested(object? sender, string journalPath)
     {
         try

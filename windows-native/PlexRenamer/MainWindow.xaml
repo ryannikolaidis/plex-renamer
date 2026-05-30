@@ -62,7 +62,6 @@
                             IsOpen="False"
                             Severity="Informational"
                             IsClosable="True"
-                            CloseButtonClick="OnRunReportClose"
                             Margin="0,0,0,4" />
                 <views:RunReport x:Name="RunReportControl" Visibility="Collapsed" />
             </StackPanel>
