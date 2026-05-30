@@ -447,15 +447,17 @@ Executes the plan, copying source files to their canonical Plex paths, optionall
 {"jsonrpc":"2.0","method":"progress","params":{
   "id": <original_req_id>,
   "event": "op_started | op_verified | op_failed",
-  "op_index": 3,                   // present on op_started only
+  "op_index": 3,                   // 0-based; present on every event
+  "total_ops": 12,                 // plan size; present on every event
   "source": "/abs/src",
   "target": "/abs/target",
-  "bytes": 12345,                  // present on op_verified only
+  "total_bytes": 12345,            // present on op_started; source size or null if stat failed
+  "bytes": 12345,                  // present on op_verified only; target size after copy
   "error": "..."                   // present on op_failed only
 }}
 ```
 
-**Current timing.** The daemon currently emits all `op_started` notifications BEFORE invoking the executor (which runs the plan synchronously without per-op callbacks), then walks the resulting journal AFTER the executor returns and emits `op_verified` / `op_failed` notifications. This means the shell sees a burst of `op_started` events at t=0, then nothing until the apply completes, then a burst of verified/failed events at t=apply-done. The shell can use this to render an "announce → result" UX (e.g. a list of pending operations that flip to verified/failed in batch). True per-op real-time progress (a smoothly-incrementing progress bar) is a future enhancement that requires plumbing a progress callback into `executor.copy.apply_plan`; the daemon's RPC surface stays the same when that lands.
+**Per-op streaming.** The daemon emits `op_started` for op N immediately BEFORE its `shutil.copy2` runs, then `op_verified` (or `op_failed`) for the same N AFTER the copy + verification completes, then `op_started` for op N+1, etc. This interleaved cadence is the load-bearing property that lets the shell render a live progress bar during multi-minute video-file copies. Pairing rule: a `op_verified` / `op_failed` event with `op_index == N` ALWAYS follows the matching `op_started` with `op_index == N`, and a later `op_started` with `op_index > N` cannot appear until the prior op resolved. Use the `total_ops` field to size the progress UI; use `op_index + 1` against it for percent-complete.
 
 **Final result**: A `RunReport` dict (flat).
 
