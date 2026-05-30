@@ -1,7 +1,15 @@
 <UserControl x:Class="PlexRenamer.Views.SourcePanel"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             xmlns:views="clr-namespace:PlexRenamer.Views"
+             xmlns:converters="clr-namespace:PlexRenamer.Views.Converters">
+    <UserControl.Resources>
+        <converters:SkipToOpacityConverter x:Key="SkipToOpacityConverter" />
+        <converters:CandidateToConfidenceConverter x:Key="CandidateToConfidenceConverter" />
+        <converters:NullCandidateToVisibilityConverter x:Key="HasCandidateConverter" />
+        <converters:NullCandidateToVisibilityConverter x:Key="NoCandidateConverter" Inverted="True" />
+    </UserControl.Resources>
     <Border BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
             BorderThickness="1"
             CornerRadius="6">
@@ -10,27 +18,81 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
-            <TextBlock Grid.Row="0"
+            <TextBlock x:Name="HeaderText"
+                       Grid.Row="0"
                        Text="Source"
                        Margin="12,8,12,4"
                        FontWeight="SemiBold"
                        FontSize="14" />
-            <ListBox x:Name="RowsListBox"
-                     Grid.Row="1"
-                     BorderThickness="0"
-                     Background="Transparent"
-                     HorizontalContentAlignment="Stretch">
-                <ListBox.ItemTemplate>
-                    <DataTemplate>
-                        <StackPanel Margin="12,4">
-                            <TextBlock Text="{Binding Parsed.RawFilename}" />
-                            <TextBlock Text="{Binding GroupKey}"
-                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                       FontSize="11" />
-                        </StackPanel>
-                    </DataTemplate>
-                </ListBox.ItemTemplate>
-            </ListBox>
+            <Grid Grid.Row="1">
+                <ListBox x:Name="RowsListBox"
+                         BorderThickness="0"
+                         Background="Transparent"
+                         SelectionMode="Extended"
+                         HorizontalContentAlignment="Stretch"
+                         AutomationProperties.Name="Source rows"
+                         AutomationProperties.HelpText="Right-click a row for per-row actions; Ctrl-click or Shift-click to select multiple rows.">
+                    <ListBox.ContextMenu>
+                        <ContextMenu x:Name="RowContextMenu"
+                                     Opened="OnContextMenuOpened">
+                            <MenuItem x:Name="EditRowItem" Header="Edit row…" InputGestureText="Enter" Click="OnEditRowMenuClick" />
+                            <MenuItem x:Name="SearchTmdbItem" Header="Search TMDB by title…" Click="OnSearchTmdbMenuClick" />
+                            <MenuItem x:Name="SetImdbItem" Header="Set IMDb ID…" Click="OnSetImdbMenuClick" />
+                            <MenuItem x:Name="PickShowItem" Header="Pick show for this group…" Click="OnPickShowMenuClick" Visibility="Collapsed" />
+                            <Separator />
+                            <MenuItem Header="Override metadata">
+                                <MenuItem x:Name="OverrideTitleItem" Header="Title…" Click="OnOverrideTitleMenuClick" />
+                                <MenuItem x:Name="OverrideYearItem" Header="Year…" Click="OnOverrideYearMenuClick" />
+                                <MenuItem x:Name="OverrideSeasonItem" Header="Season…" Click="OnOverrideSeasonMenuClick" />
+                                <MenuItem x:Name="OverrideEpisodeItem" Header="Episode…" Click="OnOverrideEpisodeMenuClick" />
+                                <MenuItem x:Name="OverrideEditionItem" Header="Edition…" Click="OnOverrideEditionMenuClick" />
+                            </MenuItem>
+                            <Separator />
+                            <MenuItem x:Name="ToggleSkipItem" Header="Skip this row" InputGestureText="Del" IsCheckable="True" Click="OnToggleSkipMenuClick" />
+                            <Separator />
+                            <MenuItem Header="Reveal source in Explorer" InputGestureText="Ctrl+R" Click="OnRevealSourceMenuClick" />
+                            <MenuItem Header="Copy source path" InputGestureText="Ctrl+C" Click="OnCopySourcePathMenuClick" />
+                        </ContextMenu>
+                    </ListBox.ContextMenu>
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="12,6"
+                                  Opacity="{Binding Skip, Converter={StaticResource SkipToOpacityConverter}}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="{Binding Parsed.RawFilename}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding GroupKey}"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               FontSize="11" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <views:ConfidenceBadge
+                                        Visibility="{Binding Candidate, Converter={StaticResource HasCandidateConverter}}"
+                                        Confidence="{Binding Candidate, Converter={StaticResource CandidateToConfidenceConverter}, Mode=OneWay}" />
+                                    <Border Visibility="{Binding Candidate, Converter={StaticResource NoCandidateConverter}}"
+                                            CornerRadius="3"
+                                            Padding="6,2"
+                                            Background="#9CA3AF">
+                                        <TextBlock Text="NO ANCHOR"
+                                                   FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="White" />
+                                    </Border>
+                                </StackPanel>
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+                <TextBlock x:Name="EmptyStateText"
+                           Text="Drop files to see parsed sources here."
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           Visibility="Visible" />
+            </Grid>
         </Grid>
     </Border>
 </UserControl>

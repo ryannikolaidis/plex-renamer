@@ -4,7 +4,7 @@
                  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
                  Title="TMDB API key"
                  Width="480"
-                 Height="280"
+                 Height="320"
                  WindowStartupLocation="CenterOwner"
                  WindowBackdropType="Mica"
                  ExtendsContentIntoTitleBar="True">
@@ -21,14 +21,34 @@
             <TextBlock TextWrapping="Wrap" Margin="0,0,0,8"
                        Text="plex-renamer queries TMDB for movie / TV identification. Paste your API key (v3, the 'API Read Access Token v4' will not work)." />
             <TextBlock TextWrapping="Wrap" Margin="0,0,0,12" FontSize="11"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                <Run Text="Get one for free at " />
+                <Hyperlink NavigateUri="https://www.themoviedb.org/settings/api"
+                           RequestNavigate="OnHyperlinkRequestNavigate">
+                    themoviedb.org → Profile → Settings → API
+                </Hyperlink>
+                <Run Text="." />
+            </TextBlock>
+            <ui:TextBox x:Name="KeyBox"
+                        PlaceholderText="paste your TMDB API key here"
+                        AutomationProperties.Name="TMDB API key" />
+            <TextBlock TextWrapping="Wrap" Margin="0,8,0,0" FontSize="11"
                        Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                       Text="Get one for free at themoviedb.org → Profile → Settings → API." />
-            <ui:TextBox x:Name="KeyBox" PlaceholderText="paste your TMDB API key here" />
+                       Text="If you Skip, plex-renamer cannot anchor files to TMDB and most rows will land unresolved until you paste a key in Settings later." />
         </StackPanel>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
-            <ui:Button x:Name="SkipButton" Content="Skip" Appearance="Secondary" Margin="0,0,8,0" Click="OnSkipClick" />
-            <ui:Button x:Name="SaveButton" Content="Save" Appearance="Primary" Click="OnSaveClick" />
+            <ui:Button x:Name="SkipButton"
+                       Content="Skip"
+                       Appearance="Secondary"
+                       Margin="0,0,8,0"
+                       IsCancel="True"
+                       Click="OnSkipClick" />
+            <ui:Button x:Name="SaveButton"
+                       Content="Save"
+                       Appearance="Primary"
+                       IsDefault="True"
+                       Click="OnSaveClick" />
         </StackPanel>
     </Grid>
 </ui:FluentWindow>

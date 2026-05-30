@@ -3,20 +3,20 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" MinHeight="48">
-        <ui:Button x:Name="SettingsButton"
-                   Content="Settings"
-                   Appearance="Secondary"
-                   Margin="0,0,8,0"
-                   Click="OnSettingsClick" />
         <ui:Button x:Name="PreviewButton"
                    Content="Preview"
                    Appearance="Secondary"
                    Margin="0,0,8,0"
+                   IsEnabled="False"
+                   ToolTip="Re-run parse and resolve on the currently loaded files (Ctrl+P)."
+                   AutomationProperties.Name="Preview"
                    Click="OnPreviewClick" />
         <ui:Button x:Name="ApplyButton"
                    Content="Apply"
                    Appearance="Primary"
-                   IsEnabled="True"
+                   IsEnabled="False"
+                   ToolTip="Copy resolved files to their Plex destinations (Ctrl+Enter)."
+                   AutomationProperties.Name="Apply"
                    Click="OnApplyClick" />
     </StackPanel>
 </UserControl>

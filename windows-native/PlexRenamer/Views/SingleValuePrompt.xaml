@@ -1,0 +1,43 @@
+<ui:FluentWindow x:Class="PlexRenamer.Views.SingleValuePrompt"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 Title="Edit value"
+                 Width="440"
+                 Height="220"
+                 WindowStartupLocation="CenterOwner"
+                 WindowBackdropType="Mica"
+                 ExtendsContentIntoTitleBar="True"
+                 ResizeMode="NoResize">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0" x:Name="TitleBarControl" Title="Edit value" />
+
+        <StackPanel Grid.Row="1" Margin="0,16,0,0">
+            <TextBlock x:Name="DescriptionText"
+                       TextWrapping="Wrap"
+                       Margin="0,0,0,8" />
+            <ui:TextBox x:Name="ValueBox"
+                        AutomationProperties.Name="Value" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <ui:Button x:Name="CancelButton"
+                       Content="Cancel"
+                       Appearance="Secondary"
+                       Margin="0,0,8,0"
+                       IsCancel="True"
+                       Click="OnCancelClick" />
+            <ui:Button x:Name="OkButton"
+                       Content="OK"
+                       Appearance="Primary"
+                       IsDefault="True"
+                       Click="OnOkClick" />
+        </StackPanel>
+    </Grid>
+</ui:FluentWindow>

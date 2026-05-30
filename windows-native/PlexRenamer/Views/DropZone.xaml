@@ -3,24 +3,40 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
              AllowDrop="True"
-             MinHeight="80">
+             MinHeight="64"
+             AutomationProperties.Name="File drop zone"
+             AutomationProperties.HelpText="Drop files or folders here. Press Browse to open a file picker instead.">
     <Border x:Name="DropBorder"
             BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
             BorderThickness="2"
             CornerRadius="8"
             Background="{DynamicResource SubtleFillColorTransparentBrush}">
-        <StackPanel HorizontalAlignment="Center"
-                    VerticalAlignment="Center"
-                    Orientation="Vertical">
-            <TextBlock x:Name="HeadlineText"
-                       Text="Drop files or folders here"
-                       FontSize="18"
-                       HorizontalAlignment="Center"
-                       Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
-            <TextBlock Text="Movies and TV folders both work"
-                       Margin="0,4,0,0"
-                       HorizontalAlignment="Center"
-                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-        </StackPanel>
+        <Grid Margin="16,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Center"
+                        Orientation="Vertical">
+                <TextBlock x:Name="HeadlineText"
+                           Text="Drop files or folders here"
+                           FontSize="16"
+                           Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                <TextBlock x:Name="HelperText"
+                           Text="Movies and TV folders both work · or click Browse →"
+                           Margin="0,2,0,0"
+                           FontSize="11"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+            <ui:Button x:Name="BrowseButton"
+                       Grid.Column="1"
+                       Content="Browse…"
+                       Appearance="Secondary"
+                       VerticalAlignment="Center"
+                       AutomationProperties.Name="Browse for files or folders"
+                       Click="OnBrowseClick" />
+        </Grid>
     </Border>
 </UserControl>
