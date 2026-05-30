@@ -3,13 +3,14 @@
                  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
                  Title="Edit row"
-                 Width="640"
-                 Height="680"
+                 Width="680"
+                 Height="720"
                  WindowStartupLocation="CenterOwner"
                  WindowBackdropType="Mica"
                  ExtendsContentIntoTitleBar="True">
     <Grid Margin="16">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
@@ -17,16 +18,30 @@
 
         <ui:TitleBar Grid.Row="0" Title="Edit row" />
 
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,16,0,0">
-            <StackPanel>
-                <TextBlock x:Name="SourcePathText"
-                           FontWeight="SemiBold"
-                           TextWrapping="Wrap"
-                           Margin="0,0,0,12"
-                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+        <!-- Row header + Skip checkbox up top so the user sees the
+             identity of the row they're editing and the "skip me" toggle
+             without scrolling. -->
+        <StackPanel Grid.Row="1" Margin="0,16,0,12">
+            <TextBlock x:Name="SourceFilenameText"
+                       FontWeight="SemiBold"
+                       FontSize="14"
+                       TextTrimming="CharacterEllipsis" />
+            <TextBlock x:Name="SourcePathText"
+                       FontSize="11"
+                       TextTrimming="CharacterEllipsis"
+                       ToolTip=""
+                       Margin="0,2,0,8"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+            <CheckBox x:Name="SkipCheckbox"
+                      Content="Skip this row in apply"
+                      AutomationProperties.Name="Skip this row in apply"
+                      Margin="0,0,0,0" />
+        </StackPanel>
 
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
                 <TextBlock Text="TMDB free-text search" FontWeight="SemiBold" />
-                <Grid Margin="0,4,0,12">
+                <Grid Margin="0,4,0,8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
@@ -34,6 +49,7 @@
                     <ui:TextBox x:Name="TmdbQueryBox"
                                 Grid.Column="0"
                                 PlaceholderText="Type title and press Enter…"
+                                AutomationProperties.Name="TMDB search query"
                                 KeyDown="OnTmdbQueryKeyDown" />
                     <ui:Button x:Name="TmdbSearchButton"
                                Grid.Column="1"
@@ -43,11 +59,12 @@
                                Click="OnTmdbSearchClick" />
                 </Grid>
                 <ListBox x:Name="TmdbResultsListBox"
-                         Height="120"
+                         Height="200"
                          BorderThickness="1"
                          BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
                          HorizontalContentAlignment="Stretch"
-                         Margin="0,0,0,12"
+                         Margin="0,0,0,16"
+                         AutomationProperties.Name="TMDB search results"
                          SelectionChanged="OnTmdbResultSelectionChanged">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
@@ -66,14 +83,15 @@
                 </ListBox>
 
                 <TextBlock Text="IMDb ID" FontWeight="SemiBold" />
-                <Grid Margin="0,4,0,12">
+                <Grid Margin="0,4,0,16">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <ui:TextBox x:Name="ImdbIdBox"
                                 Grid.Column="0"
-                                PlaceholderText="tt0000000" />
+                                PlaceholderText="tt0000000"
+                                AutomationProperties.Name="IMDb ID" />
                     <ui:Button x:Name="ImdbLookupButton"
                                Grid.Column="1"
                                Content="Look up"
@@ -82,32 +100,51 @@
                                Click="OnImdbLookupClick" />
                 </Grid>
 
-                <TextBlock Text="Manual overrides" FontWeight="SemiBold" Margin="0,8,0,4" />
-                <Grid Margin="0,0,0,8">
+                <TextBlock Text="Manual overrides" FontWeight="SemiBold" Margin="0,4,0,4" />
+                <TextBlock Text="Title / Year"
+                           FontSize="11"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                           Margin="0,0,0,2" />
+                <Grid Margin="0,0,0,10">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="100" />
                     </Grid.ColumnDefinitions>
-                    <ui:TextBox x:Name="ManualTitleBox" Grid.Column="0" PlaceholderText="Title" Margin="0,0,4,0" />
-                    <ui:TextBox x:Name="ManualYearBox" Grid.Column="1" PlaceholderText="Year" />
+                    <ui:TextBox x:Name="ManualTitleBox" Grid.Column="0" PlaceholderText="Title" Margin="0,0,4,0" AutomationProperties.Name="Manual title override" />
+                    <ui:TextBox x:Name="ManualYearBox" Grid.Column="1" PlaceholderText="Year" AutomationProperties.Name="Manual year override" />
                 </Grid>
-                <Grid Margin="0,0,0,8">
+                <TextBlock Text="Season / Episode (TV)"
+                           FontSize="11"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                           Margin="0,0,0,2" />
+                <Grid Margin="0,0,0,10">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
-                    <ui:TextBox x:Name="ManualSeasonBox" Grid.Column="0" PlaceholderText="Season (TV)" Margin="0,0,4,0" />
-                    <ui:TextBox x:Name="ManualEpisodeBox" Grid.Column="1" PlaceholderText="Episode (TV)" Margin="4,0,0,0" />
+                    <ui:TextBox x:Name="ManualSeasonBox" Grid.Column="0" PlaceholderText="Season" Margin="0,0,4,0" AutomationProperties.Name="Manual season override" />
+                    <ui:TextBox x:Name="ManualEpisodeBox" Grid.Column="1" PlaceholderText="Episode" Margin="4,0,0,0" AutomationProperties.Name="Manual episode override" />
                 </Grid>
-                <ui:TextBox x:Name="ManualEditionBox" PlaceholderText="Edition (e.g. Director's Cut)" Margin="0,0,0,8" />
-
-                <CheckBox x:Name="SkipCheckbox" Content="Skip this row in apply" Margin="0,8,0,0" />
+                <TextBlock Text="Edition"
+                           FontSize="11"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                           Margin="0,0,0,2" />
+                <ui:TextBox x:Name="ManualEditionBox" PlaceholderText="e.g. Director's Cut" Margin="0,0,0,8" AutomationProperties.Name="Manual edition override" />
             </StackPanel>
         </ScrollViewer>
 
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
-            <ui:Button x:Name="CancelButton" Content="Cancel" Appearance="Secondary" Margin="0,0,8,0" Click="OnCancelClick" />
-            <ui:Button x:Name="SaveButton" Content="Save" Appearance="Primary" Click="OnSaveClick" />
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <ui:Button x:Name="CancelButton"
+                       Content="Cancel"
+                       Appearance="Secondary"
+                       Margin="0,0,8,0"
+                       IsCancel="True"
+                       Click="OnCancelClick" />
+            <ui:Button x:Name="SaveButton"
+                       Content="Save"
+                       Appearance="Primary"
+                       IsDefault="True"
+                       Click="OnSaveClick" />
         </StackPanel>
     </Grid>
 </ui:FluentWindow>

@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Windows;
+using System.Windows.Navigation;
 using Wpf.Ui.Controls;
 
 namespace PlexRenamer.Views;
@@ -10,6 +12,23 @@ public partial class TmdbKeyPrompt : FluentWindow
     public TmdbKeyPrompt()
     {
         InitializeComponent();
+    }
+
+    private void OnHyperlinkRequestNavigate(object sender, RequestNavigateEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = e.Uri.AbsoluteUri,
+                UseShellExecute = true,
+            });
+        }
+        catch
+        {
+            // No browser configured; silently fail.
+        }
+        e.Handled = true;
     }
 
     private void OnSaveClick(object sender, RoutedEventArgs e)

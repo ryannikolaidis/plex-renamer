@@ -19,13 +19,16 @@
 
         <ui:TitleBar Grid.Row="0" Title="Confirm source cleanup" />
 
-        <TextBlock Grid.Row="1"
-                   TextWrapping="Wrap"
-                   Margin="0,16,0,8"
-                   FontWeight="SemiBold"
-                   Foreground="{DynamicResource SystemFillColorCautionBrush}">
-            <Run Text="⚠ This will delete every file and (now-empty) parent directory listed below after the copy verifies." />
-        </TextBlock>
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,16,0,8" VerticalAlignment="Center">
+            <ui:SymbolIcon Symbol="Warning24"
+                           Foreground="{DynamicResource SystemFillColorCautionBrush}"
+                           FontSize="20"
+                           Margin="0,0,8,0" />
+            <TextBlock TextWrapping="Wrap"
+                       FontWeight="SemiBold"
+                       Foreground="{DynamicResource SystemFillColorCautionBrush}"
+                       Text="This will delete every file and (now-empty) parent directory listed below after the copy verifies." />
+        </StackPanel>
 
         <ScrollViewer Grid.Row="2"
                       BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
@@ -35,6 +38,7 @@
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
                         <TextBlock Text="{Binding}"
+                                   ToolTip="{Binding}"
                                    Margin="8,2"
                                    FontFamily="Consolas"
                                    FontSize="11"

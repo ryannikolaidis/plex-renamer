@@ -7,7 +7,6 @@ public partial class ActionBar : UserControl
 {
     public event EventHandler? PreviewClicked;
     public event EventHandler? ApplyClicked;
-    public event EventHandler? SettingsClicked;
 
     public ActionBar()
     {
@@ -32,12 +31,12 @@ public partial class ActionBar : UserControl
         set => ApplyButton.ToolTip = value;
     }
 
+    public void RaisePreviewClicked() => PreviewClicked?.Invoke(this, EventArgs.Empty);
+    public void RaiseApplyClicked() => ApplyClicked?.Invoke(this, EventArgs.Empty);
+
     private void OnPreviewClick(object sender, System.Windows.RoutedEventArgs e)
         => PreviewClicked?.Invoke(this, EventArgs.Empty);
 
     private void OnApplyClick(object sender, System.Windows.RoutedEventArgs e)
         => ApplyClicked?.Invoke(this, EventArgs.Empty);
-
-    private void OnSettingsClick(object sender, System.Windows.RoutedEventArgs e)
-        => SettingsClicked?.Invoke(this, EventArgs.Empty);
 }

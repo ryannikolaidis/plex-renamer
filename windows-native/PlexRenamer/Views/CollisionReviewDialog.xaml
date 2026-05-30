@@ -3,8 +3,8 @@
                  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
                  Title="Resolve collisions"
-                 Width="720"
-                 Height="560"
+                 Width="780"
+                 Height="600"
                  WindowStartupLocation="CenterOwner"
                  WindowBackdropType="Mica"
                  ExtendsContentIntoTitleBar="True">
@@ -18,36 +18,79 @@
 
         <ui:TitleBar Grid.Row="0" Title="Resolve collisions" />
 
-        <TextBlock Grid.Row="1"
-                   TextWrapping="Wrap"
-                   Margin="0,16,0,8"
-                   Text="Two or more source files want to land at the same target path. Pick one source per collision; the others will be skipped." />
+        <StackPanel Grid.Row="1" Margin="0,16,0,12">
+            <TextBlock x:Name="HeadlineText"
+                       FontWeight="SemiBold"
+                       FontSize="14"
+                       TextWrapping="Wrap"
+                       Margin="0,0,0,4" />
+            <TextBlock TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                       Text="For each collision, pick the source that should land at the target path. The other sources will be marked as Skip in the next preview." />
+        </StackPanel>
 
-        <ListBox x:Name="CollisionsListBox"
-                 Grid.Row="2"
-                 BorderThickness="1"
-                 BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
-                 HorizontalContentAlignment="Stretch">
-            <ListBox.ItemTemplate>
+        <ItemsControl x:Name="CollisionsItems"
+                      Grid.Row="2"
+                      AutomationProperties.Name="Collision list">
+            <ItemsControl.Template>
+                <ControlTemplate TargetType="ItemsControl">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  BorderThickness="1"
+                                  BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
+                        <ItemsPresenter />
+                    </ScrollViewer>
+                </ControlTemplate>
+            </ItemsControl.Template>
+            <ItemsControl.ItemTemplate>
                 <DataTemplate>
-                    <StackPanel Margin="8" Orientation="Vertical">
-                        <TextBlock Text="{Binding Target}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                        <TextBlock Text="{Binding Reason}" FontSize="11" Foreground="{DynamicResource TextFillColorTertiaryBrush}" Margin="0,2,0,4" />
-                        <ItemsControl ItemsSource="{Binding Sources}">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <TextBlock Text="{Binding}" Margin="12,2,0,2" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="11" TextTrimming="CharacterEllipsis" />
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </StackPanel>
+                    <Border BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                            BorderThickness="0,0,0,1"
+                            Padding="12,10">
+                        <StackPanel>
+                            <TextBlock Text="{Binding Target}"
+                                       FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTip="{Binding Target}" />
+                            <TextBlock Text="{Binding Reason}"
+                                       FontSize="11"
+                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                       Margin="0,2,0,6" />
+                            <ItemsControl ItemsSource="{Binding SourceChoices}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <RadioButton GroupName="{Binding GroupName}"
+                                                     IsChecked="{Binding IsWinner, Mode=TwoWay}"
+                                                     Margin="0,2"
+                                                     ToolTip="{Binding SourcePath}">
+                                            <TextBlock Text="{Binding SourcePath}"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </RadioButton>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
                 </DataTemplate>
-            </ListBox.ItemTemplate>
-        </ListBox>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
 
         <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-            <ui:Button x:Name="CancelButton" Content="Cancel" Appearance="Secondary" Margin="0,0,8,0" Click="OnCancelClick" />
-            <ui:Button x:Name="SkipAllButton" Content="Skip colliding sources" Appearance="Primary" Click="OnSkipAllClick" />
+            <ui:Button x:Name="CancelButton"
+                       Content="Cancel"
+                       Appearance="Secondary"
+                       Margin="0,0,8,0"
+                       IsCancel="True"
+                       Click="OnCancelClick" />
+            <ui:Button x:Name="SkipAllButton"
+                       Content="Skip all colliding sources"
+                       Appearance="Secondary"
+                       Margin="0,0,8,0"
+                       Click="OnSkipAllClick" />
+            <ui:Button x:Name="ApplyChoicesButton"
+                       Content="Apply selections"
+                       Appearance="Primary"
+                       IsDefault="True"
+                       Click="OnApplyChoicesClick" />
         </StackPanel>
     </Grid>
 </ui:FluentWindow>

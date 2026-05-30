@@ -1,4 +1,7 @@
+using System.Diagnostics;
 using System.Windows;
+using System.Windows.Navigation;
+using Microsoft.Win32;
 using PlexRenamer.Bridge.Schemas;
 using Wpf.Ui.Controls;
 
@@ -37,6 +40,49 @@ public partial class SettingsDialog : FluentWindow
     private void OnCancelClick(object sender, RoutedEventArgs e)
     {
         DialogResult = false;
+    }
+
+    private void OnBrowseMoviesClick(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFolderDialog
+        {
+            Title = "Movies library root",
+            InitialDirectory = NullIfEmpty(MoviesRootBox.Text) ?? string.Empty,
+        };
+        if (dialog.ShowDialog() == true)
+        {
+            MoviesRootBox.Text = dialog.FolderName;
+        }
+    }
+
+    private void OnBrowseTvClick(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFolderDialog
+        {
+            Title = "TV library root",
+            InitialDirectory = NullIfEmpty(TvRootBox.Text) ?? string.Empty,
+        };
+        if (dialog.ShowDialog() == true)
+        {
+            TvRootBox.Text = dialog.FolderName;
+        }
+    }
+
+    private void OnHyperlinkRequestNavigate(object sender, RequestNavigateEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = e.Uri.AbsoluteUri,
+                UseShellExecute = true,
+            });
+        }
+        catch
+        {
+            // No browser configured; silently fail.
+        }
+        e.Handled = true;
     }
 
     private static string? NullIfEmpty(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;

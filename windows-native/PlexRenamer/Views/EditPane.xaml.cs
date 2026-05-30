@@ -40,7 +40,9 @@ public partial class EditPane : FluentWindow
         AllRows = allRows;
         InitializeComponent();
 
+        SourceFilenameText.Text = row.Parsed.RawFilename;
         SourcePathText.Text = row.Parsed.SourcePath;
+        SourcePathText.ToolTip = row.Parsed.SourcePath;
         TmdbQueryBox.Text = row.Parsed.TitleCandidate ?? string.Empty;
         ImdbIdBox.Text = row.ImdbIdOverride ?? string.Empty;
         ManualTitleBox.Text = row.ManualTitle ?? string.Empty;

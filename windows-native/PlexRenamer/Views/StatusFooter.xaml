@@ -1,0 +1,34 @@
+<UserControl x:Class="PlexRenamer.Views.StatusFooter"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+    <Grid MinHeight="28">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <ui:HyperlinkButton x:Name="LibraryRootsButton"
+                            Grid.Column="0"
+                            Padding="0,2"
+                            Click="OnLibraryRootsClick"
+                            AutomationProperties.Name="Library roots — click to open Settings">
+            <TextBlock x:Name="LibraryRootsText"
+                       FontSize="11"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                       Text="Set library roots in Settings →" />
+        </ui:HyperlinkButton>
+        <StackPanel Grid.Column="2" Orientation="Horizontal">
+            <ui:ProgressRing x:Name="EngineSpinner"
+                             Width="14"
+                             Height="14"
+                             IsIndeterminate="True"
+                             Visibility="Collapsed"
+                             Margin="0,0,6,0" />
+            <TextBlock x:Name="EngineStatusText"
+                       FontSize="11"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                       Text="Engine: not started" />
+        </StackPanel>
+    </Grid>
+</UserControl>

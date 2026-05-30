@@ -18,7 +18,25 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <ui:TitleBar Grid.Row="0" Title="plex-renamer" />
+        <Grid Grid.Row="0">
+            <ui:TitleBar Title="plex-renamer" />
+            <!-- Settings gear sits in the title-bar strip, right-aligned.
+                 WPF-UI 3.0.5's ui:TitleBar doesn't expose a
+                 TrailingContent slot, so we overlay the button on top of
+                 the title bar within the same Grid row. The button stays
+                 clear of the system caption buttons via the right margin. -->
+            <ui:Button x:Name="SettingsTitleBarButton"
+                       HorizontalAlignment="Right"
+                       VerticalAlignment="Center"
+                       Margin="0,0,148,0"
+                       Appearance="Transparent"
+                       Padding="8"
+                       ToolTip="Settings (Ctrl+,)"
+                       AutomationProperties.Name="Settings"
+                       Click="OnSettingsTitleBarClick">
+                <ui:SymbolIcon Symbol="Settings24" />
+            </ui:Button>
+        </Grid>
 
         <Grid Grid.Row="1" Margin="16,8,16,8">
             <Grid.RowDefinitions>
@@ -40,17 +58,22 @@
 
             <StackPanel Grid.Row="2" Margin="0,12,0,0">
                 <views:ApplyProgress x:Name="ApplyProgressControl" Margin="0,0,0,8" />
+                <ui:InfoBar x:Name="RunReportInfoBar"
+                            IsOpen="False"
+                            Severity="Informational"
+                            IsClosable="True"
+                            Margin="0,0,0,4" />
                 <views:RunReport x:Name="RunReportControl" Visibility="Collapsed" />
             </StackPanel>
         </Grid>
 
-        <Grid Grid.Row="2" Margin="16,8,16,16">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-            <views:LibraryRootsInline x:Name="LibraryRootsControl" Grid.Column="0" />
-            <views:ActionBar x:Name="ActionBarControl" Grid.Column="1" />
+        <Grid Grid.Row="2" Margin="16,8,16,12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <views:ActionBar x:Name="ActionBarControl" Grid.Row="0" />
+            <views:StatusFooter x:Name="StatusFooterControl" Grid.Row="1" Margin="0,6,0,0" />
         </Grid>
     </Grid>
 </ui:FluentWindow>

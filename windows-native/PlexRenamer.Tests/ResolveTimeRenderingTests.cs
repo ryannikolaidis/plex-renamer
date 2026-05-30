@@ -10,7 +10,7 @@ namespace PlexRenamer.Tests;
 /// force layout via Measure+Arrange on the inner content, assert
 /// non-zero ActualWidth/Height. Catches "squished" rendering
 /// regressions on the views slice 3 ships (ConfidenceBadge,
-/// LibraryRootsInline as UserControls; ShowAnchorPicker, EditPane,
+/// StatusFooter as UserControls; ShowAnchorPicker, EditPane,
 /// TmdbKeyPrompt as FluentWindows where we measure the inner Content).
 /// </summary>
 public class ResolveTimeRenderingTests
@@ -50,13 +50,14 @@ public class ResolveTimeRenderingTests
     }
 
     [StaFact]
-    public void LibraryRootsInline_RendersWithNonZeroDimensions()
+    public void StatusFooter_RendersWithNonZeroDimensions()
     {
-        var control = new LibraryRootsInline();
-        control.SetRoots(@"C:\Movies", @"C:\TV");
-        MeasureAndArrange(control, new Size(900, 50));
-        Assert.True(control.ActualWidth > 0, "LibraryRootsInline width must be non-zero after layout.");
-        Assert.True(control.ActualHeight > 0, "LibraryRootsInline height must be non-zero after layout.");
+        var control = new StatusFooter();
+        control.SetLibraryRoots(@"C:\Movies", @"C:\TV");
+        control.SetEngineState(EngineState.Ready);
+        MeasureAndArrange(control, new Size(900, 32));
+        Assert.True(control.ActualWidth > 0, "StatusFooter width must be non-zero after layout.");
+        Assert.True(control.ActualHeight > 0, "StatusFooter height must be non-zero after layout.");
     }
 
     [StaFact]
@@ -64,10 +65,10 @@ public class ResolveTimeRenderingTests
     {
         var prompt = new TmdbKeyPrompt();
         Assert.Equal(480, prompt.Width);
-        Assert.Equal(280, prompt.Height);
+        Assert.Equal(320, prompt.Height);
         if (prompt.Content is FrameworkElement content)
         {
-            MeasureAndArrange(content, new Size(448, 232));
+            MeasureAndArrange(content, new Size(448, 272));
             Assert.True(content.ActualWidth > 0);
             Assert.True(content.ActualHeight > 0);
         }

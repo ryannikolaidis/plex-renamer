@@ -3,8 +3,8 @@
                  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
                  Title="Settings"
-                 Width="520"
-                 Height="480"
+                 Width="640"
+                 Height="560"
                  WindowStartupLocation="CenterOwner"
                  WindowBackdropType="Mica"
                  ExtendsContentIntoTitleBar="True">
@@ -17,26 +17,112 @@
 
         <ui:TitleBar Grid.Row="0" Title="Settings" />
 
-        <StackPanel Grid.Row="1" Margin="0,16,0,0">
-            <TextBlock Text="TMDB API key" FontWeight="SemiBold" />
-            <ui:TextBox x:Name="TmdbKeyBox" Margin="0,4,0,12" />
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,16,0,0">
+            <StackPanel>
+                <!-- TMDB / OMDB integration -->
+                <TextBlock Text="TMDB / OMDB integration"
+                           FontWeight="SemiBold"
+                           FontSize="14"
+                           Margin="0,0,0,8" />
 
-            <TextBlock Text="OMDB API key (optional)" FontWeight="SemiBold" />
-            <ui:TextBox x:Name="OmdbKeyBox" Margin="0,4,0,12" />
+                <TextBlock Text="TMDB API key" Margin="0,0,0,4" />
+                <ui:TextBox x:Name="TmdbKeyBox"
+                            PlaceholderText="paste your TMDB v3 API key here"
+                            AutomationProperties.Name="TMDB API key"
+                            Margin="0,0,0,4" />
+                <TextBlock Margin="0,0,0,12" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                    <Run Text="Get one for free at " />
+                    <Hyperlink NavigateUri="https://www.themoviedb.org/settings/api"
+                               RequestNavigate="OnHyperlinkRequestNavigate">
+                        themoviedb.org → Profile → Settings → API
+                    </Hyperlink>
+                    <Run Text=" (use the v3 API key, not the v4 read-access token)." />
+                </TextBlock>
 
-            <TextBlock Text="Movies library root" FontWeight="SemiBold" />
-            <ui:TextBox x:Name="MoviesRootBox" Margin="0,4,0,12" />
+                <TextBlock Text="OMDB API key (optional)" Margin="0,0,0,4" />
+                <ui:TextBox x:Name="OmdbKeyBox"
+                            PlaceholderText="optional, used for IMDb fallbacks"
+                            AutomationProperties.Name="OMDB API key"
+                            Margin="0,0,0,16" />
 
-            <TextBlock Text="TV library root" FontWeight="SemiBold" />
-            <ui:TextBox x:Name="TvRootBox" Margin="0,4,0,12" />
+                <!-- Library roots -->
+                <TextBlock Text="Library roots"
+                           FontWeight="SemiBold"
+                           FontSize="14"
+                           Margin="0,8,0,8" />
 
-            <CheckBox x:Name="CleanupCheckbox" Content="Enable source cleanup after successful copy" Margin="0,4,0,4" />
-            <CheckBox x:Name="AutoAcceptCheckbox" Content="Auto-accept top TMDB hit (power-user)" Margin="0,4,0,4" />
-        </StackPanel>
+                <TextBlock Text="Movies root" Margin="0,0,0,4" />
+                <Grid Margin="0,0,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <ui:TextBox x:Name="MoviesRootBox"
+                                Grid.Column="0"
+                                PlaceholderText="e.g. D:\Plex\Movies"
+                                AutomationProperties.Name="Movies library root path" />
+                    <ui:Button x:Name="BrowseMoviesButton"
+                               Grid.Column="1"
+                               Content="Browse…"
+                               Appearance="Secondary"
+                               Margin="6,0,0,0"
+                               Click="OnBrowseMoviesClick"
+                               AutomationProperties.Name="Browse for movies library root" />
+                </Grid>
+
+                <TextBlock Text="TV root" Margin="0,0,0,4" />
+                <Grid Margin="0,0,0,16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <ui:TextBox x:Name="TvRootBox"
+                                Grid.Column="0"
+                                PlaceholderText="e.g. D:\Plex\TV"
+                                AutomationProperties.Name="TV library root path" />
+                    <ui:Button x:Name="BrowseTvButton"
+                               Grid.Column="1"
+                               Content="Browse…"
+                               Appearance="Secondary"
+                               Margin="6,0,0,0"
+                               Click="OnBrowseTvClick"
+                               AutomationProperties.Name="Browse for TV library root" />
+                </Grid>
+
+                <!-- Apply behaviour -->
+                <TextBlock Text="Apply behaviour"
+                           FontWeight="SemiBold"
+                           FontSize="14"
+                           Margin="0,8,0,8" />
+
+                <ui:InfoBar IsOpen="True"
+                            Severity="Warning"
+                            IsClosable="False"
+                            Title="Source cleanup deletes files"
+                            Message="With cleanup enabled, source files are deleted after every successful copy. A separate confirmation dialog still appears before any deletion runs."
+                            Margin="0,0,0,8" />
+                <CheckBox x:Name="CleanupCheckbox"
+                          Content="Delete source files after successful copy (gated by a per-batch confirmation)"
+                          AutomationProperties.Name="Enable source cleanup after copy"
+                          Margin="0,0,0,8" />
+                <CheckBox x:Name="AutoAcceptCheckbox"
+                          Content="Auto-accept high-confidence TMDB matches without prompting"
+                          AutomationProperties.Name="Auto-accept high-confidence TMDB matches" />
+            </StackPanel>
+        </ScrollViewer>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
-            <ui:Button x:Name="CancelButton" Content="Cancel" Appearance="Secondary" Margin="0,0,8,0" Click="OnCancelClick" />
-            <ui:Button x:Name="SaveButton" Content="Save" Appearance="Primary" Click="OnSaveClick" />
+            <ui:Button x:Name="CancelButton"
+                       Content="Cancel"
+                       Appearance="Secondary"
+                       Margin="0,0,8,0"
+                       IsCancel="True"
+                       Click="OnCancelClick" />
+            <ui:Button x:Name="SaveButton"
+                       Content="Save"
+                       Appearance="Primary"
+                       IsDefault="True"
+                       Click="OnSaveClick" />
         </StackPanel>
     </Grid>
 </ui:FluentWindow>

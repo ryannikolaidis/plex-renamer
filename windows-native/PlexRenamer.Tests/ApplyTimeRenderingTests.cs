@@ -34,10 +34,10 @@ public class ApplyTimeRenderingTests
                 Reason = "duplicate_input",
             }
         });
-        Assert.Equal(720, dialog.Width);
+        Assert.Equal(780, dialog.Width);
         if (dialog.Content is FrameworkElement content)
         {
-            MeasureAndArrange(content, new Size(688, 512));
+            MeasureAndArrange(content, new Size(748, 552));
             Assert.True(content.ActualWidth > 0, "CollisionReviewDialog content width must be non-zero.");
             Assert.True(content.ActualHeight > 0, "CollisionReviewDialog content height must be non-zero.");
         }

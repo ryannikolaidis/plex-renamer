@@ -48,6 +48,7 @@ Thumbs.db
 # Agent-coding worktrees + project state
 .agent-coding/
 .agent-coding-pr-body.md
+.pr-body.md
 
 # Test corpus output (generated)
 /tmp/plex_corpus/

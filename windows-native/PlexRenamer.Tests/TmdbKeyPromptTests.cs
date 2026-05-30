@@ -15,7 +15,7 @@ public class TmdbKeyPromptTests
         // content instead (the WPF analogue of the Qt sizeHint
         // discipline for dialogs).
         Assert.Equal(480, prompt.Width);
-        Assert.Equal(280, prompt.Height);
+        Assert.Equal(320, prompt.Height);
         Assert.Null(prompt.EnteredKey);
     }
 }
