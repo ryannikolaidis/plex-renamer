@@ -84,8 +84,8 @@ public class RenderingTests
         };
         var dialog = new PlexRenamer.Views.SettingsDialog(initial);
         // Construction itself proves XAML parses + bindings resolve.
-        Assert.Equal(520, dialog.Width);
-        Assert.Equal(480, dialog.Height);
+        Assert.Equal(640, dialog.Width);
+        Assert.Equal(560, dialog.Height);
         // Force the inner content to lay out. The Grid inside the
         // FluentWindow is a regular FrameworkElement and does honor
         // Measure+Arrange.

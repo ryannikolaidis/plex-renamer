@@ -653,5 +653,11 @@ internal sealed class RelayCommand : ICommand
     public RelayCommand(Action<object?> execute) { _execute = execute; }
     public bool CanExecute(object? parameter) => true;
     public void Execute(object? parameter) => _execute(parameter);
+    // CanExecute never changes (the keyboard shortcut targets are always
+    // runnable; the underlying handlers no-op when state isn't ready),
+    // so the event is intentionally never raised. ICommand requires it
+    // to be present regardless.
+#pragma warning disable CS0067
     public event EventHandler? CanExecuteChanged;
+#pragma warning restore CS0067
 }

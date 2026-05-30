@@ -65,10 +65,10 @@ public class ResolveTimeRenderingTests
     {
         var prompt = new TmdbKeyPrompt();
         Assert.Equal(480, prompt.Width);
-        Assert.Equal(280, prompt.Height);
+        Assert.Equal(320, prompt.Height);
         if (prompt.Content is FrameworkElement content)
         {
-            MeasureAndArrange(content, new Size(448, 232));
+            MeasureAndArrange(content, new Size(448, 272));
             Assert.True(content.ActualWidth > 0);
             Assert.True(content.ActualHeight > 0);
         }
