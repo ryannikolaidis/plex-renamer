@@ -125,12 +125,23 @@ public sealed class EngineExitedEventArgs : EventArgs
 /// <c>op_started | op_verified | op_failed</c>) from the terminal
 /// RunReport (<see cref="EventKind"/> == <c>done</c>).
 /// </summary>
+/// <remarks>
+/// Per-op streaming order: <c>op_started</c> for op N arrives BEFORE its
+/// copy begins, then <c>op_verified</c> (or <c>op_failed</c>) for the
+/// same N arrives AFTER the copy completes, then <c>op_started</c> for
+/// op N+1. Use <see cref="OpIndex"/> + 1 against <see cref="TotalOps"/>
+/// for percent-complete on the progress bar.
+/// </remarks>
 public sealed record ApplyEvent
 {
     public required string EventKind { get; init; }
     public int? OpIndex { get; init; }
+    public int? TotalOps { get; init; }
     public string? Source { get; init; }
     public string? Target { get; init; }
+    /// <summary>Source size in bytes on <c>op_started</c>; null if the stat failed.</summary>
+    public long? TotalBytes { get; init; }
+    /// <summary>Target size in bytes on <c>op_verified</c>; null otherwise.</summary>
     public long? Bytes { get; init; }
     public string? Error { get; init; }
     /// <summary>Non-null only when <see cref="EventKind"/> == <c>done</c>.</summary>

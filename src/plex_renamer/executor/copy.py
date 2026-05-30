@@ -16,13 +16,26 @@ Sidecars are recorded as separate journal entries with
 sidecar tuple. The (op_index, parent_op_index) tuple is the journal's
 lookup key so a sidecar's local position cannot collide with a later
 primary op's index.
+
+Two public entry points:
+
+* :func:`apply_plan` — synchronous; returns an :class:`ApplyResult`.
+* :func:`apply_plan_iter` — generator; yields per-op progress events
+  (``op_started`` / ``op_verified`` / ``op_failed``) interleaved with
+  the actual copies, then a final ``done`` event carrying the same
+  :class:`ApplyResult`. Use this when a caller needs to render live
+  progress (the daemon's JSON-RPC streaming path, a future TQDM-backed
+  CLI mode, etc.). :func:`apply_plan` is a thin wrapper that exhausts
+  :func:`apply_plan_iter` and returns the result.
 """
 
 from __future__ import annotations
 
 import shutil
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from plex_renamer.executor.cleanup import cleanup_sources
 from plex_renamer.executor.journal import Journal
@@ -45,6 +58,117 @@ class ApplyResult:
     journal_path: Path
 
 
+def apply_plan_iter(
+    plan: RenamePlan,
+    *,
+    journal: Journal | None = None,
+    journal_dir: Path | None = None,
+    cleanup: bool = False,
+    verify_hash: bool = False,
+) -> Iterator[dict[str, Any]]:
+    """Generator variant of :func:`apply_plan` that yields progress.
+
+    Yields dicts with an ``"event"`` key:
+
+    * ``{"event": "op_started", "op_index": int, "total_ops": int,
+        "source": str, "target": str, "total_bytes": int | None}`` — emitted
+      immediately before the copy of op ``op_index`` begins.
+    * ``{"event": "op_verified", "op_index": int, "total_ops": int,
+        "source": str, "target": str, "bytes": int}`` — emitted after a
+      successful primary + sidecar copy + verification.
+    * ``{"event": "op_failed", "op_index": int, "total_ops": int,
+        "source": str, "target": str, "error": str}`` — emitted after a
+      primary OR sidecar failure.
+    * ``{"event": "done", "result": ApplyResult}`` — the terminal event.
+
+    The events are interleaved with the actual copy work — each
+    ``op_started`` lands BEFORE the corresponding :func:`shutil.copy2`
+    runs and the matching ``op_verified`` / ``op_failed`` lands AFTER.
+    A streaming consumer (the daemon's apply_plan RPC, a CLI progress
+    bar) sees per-op cadence even when individual copies take minutes.
+    """
+    if journal is None:
+        journal = Journal.new(
+            input_root=plan.input_root,
+            library_root=plan.movies_root,
+            journal_dir=journal_dir,
+        )
+
+    total_ops = len(plan.ops)
+    succeeded = 0
+    failed = 0
+    for idx, op in enumerate(plan.ops):
+        try:
+            source_size = op.source.stat().st_size
+        except OSError:
+            source_size = None
+        yield {
+            "event": "op_started",
+            "op_index": idx,
+            "total_ops": total_ops,
+            "source": str(op.source),
+            "target": str(op.target),
+            "total_bytes": source_size,
+        }
+        try:
+            _copy_one(op, idx, journal, verify_hash=verify_hash)
+            succeeded += 1
+            try:
+                bytes_copied = op.target.stat().st_size
+            except OSError:
+                bytes_copied = 0
+            yield {
+                "event": "op_verified",
+                "op_index": idx,
+                "total_ops": total_ops,
+                "source": str(op.source),
+                "target": str(op.target),
+                "bytes": bytes_copied,
+            }
+        except _SidecarCopyError as sc_exc:
+            journal.mark_failed(
+                sc_exc.sidecar_op_index,
+                error=str(sc_exc.__cause__ or sc_exc),
+                parent_op_index=idx,
+            )
+            failed += 1
+            yield {
+                "event": "op_failed",
+                "op_index": idx,
+                "total_ops": total_ops,
+                "source": str(op.source),
+                "target": str(op.target),
+                "error": str(sc_exc.__cause__ or sc_exc),
+            }
+        except Exception as exc:
+            journal.mark_failed(idx, error=str(exc))
+            failed += 1
+            yield {
+                "event": "op_failed",
+                "op_index": idx,
+                "total_ops": total_ops,
+                "source": str(op.source),
+                "target": str(op.target),
+                "error": str(exc),
+            }
+
+    cleanup_did_run = False
+    if cleanup and failed == 0 and journal.all_verified:
+        sources = [Path(e.source) for e in journal.verified_entries]
+        cleanup_did_run = cleanup_sources(sources, input_root=plan.input_root)
+        journal.mark_cleanup(cleanup_did_run)
+
+    yield {
+        "event": "done",
+        "result": ApplyResult(
+            succeeded=succeeded,
+            failed=failed,
+            cleanup_ran=cleanup_did_run,
+            journal_path=journal.path,
+        ),
+    }
+
+
 def apply_plan(
     plan: RenamePlan,
     *,
@@ -62,51 +186,21 @@ def apply_plan(
     Failures don't abort the whole batch; each op fails independently so
     a partial success still produces a usable journal for the rest.
     Cleanup is gated on every op verifying.
+
+    This wraps :func:`apply_plan_iter` so callers that want progress
+    events can switch to the iterator variant without an API change
+    here.
     """
-    if journal is None:
-        # library_root for the journal is just the closer of the two
-        # roots; we record movies_root by convention.
-        journal = Journal.new(
-            input_root=plan.input_root,
-            library_root=plan.movies_root,
-            journal_dir=journal_dir,
-        )
-
-    succeeded = 0
-    failed = 0
-    for idx, op in enumerate(plan.ops):
-        try:
-            _copy_one(op, idx, journal, verify_hash=verify_hash)
-            succeeded += 1
-        except _SidecarCopyError as sc_exc:
-            # The primary copy succeeded (verified on disk); only the
-            # sidecar entry is "failed". The op is partially-successful:
-            # count it as a failure for the batch summary, but keep the
-            # primary's verified status so undo can revert it cleanly.
-            journal.mark_failed(
-                sc_exc.sidecar_op_index,
-                error=str(sc_exc.__cause__ or sc_exc),
-                parent_op_index=idx,
-            )
-            failed += 1
-        except Exception as exc:
-            # Primary copy failed (no sidecars attempted yet). The
-            # composite key (idx, None) correctly resolves to the primary.
-            journal.mark_failed(idx, error=str(exc))
-            failed += 1
-
-    cleanup_did_run = False
-    if cleanup and failed == 0 and journal.all_verified:
-        # The cleanup module enforces its own guards; we just call it.
-        sources = [Path(e.source) for e in journal.verified_entries]
-        cleanup_did_run = cleanup_sources(sources, input_root=plan.input_root)
-        journal.mark_cleanup(cleanup_did_run)
-    return ApplyResult(
-        succeeded=succeeded,
-        failed=failed,
-        cleanup_ran=cleanup_did_run,
-        journal_path=journal.path,
-    )
+    for event in apply_plan_iter(
+        plan,
+        journal=journal,
+        journal_dir=journal_dir,
+        cleanup=cleanup,
+        verify_hash=verify_hash,
+    ):
+        if event.get("event") == "done":
+            return event["result"]
+    raise RuntimeError("apply_plan_iter exhausted without a 'done' event")
 
 
 class _SidecarCopyError(Exception):

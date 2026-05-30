@@ -113,16 +113,31 @@ public partial class MainWindow : FluentWindow
                 }
             }
 
-            // 4. apply_plan (streaming).
-            RunReportControl.Visibility = System.Windows.Visibility.Visible;
+            // 4. apply_plan (streaming). The daemon emits op_started for
+            // each op BEFORE its copy begins and op_verified / op_failed
+            // AFTER it completes, so the progress widget updates live
+            // during multi-minute video-file copies.
+            ApplyProgressControl.Begin(plan.Ops.Count);
+            RunReportControl.Visibility = System.Windows.Visibility.Collapsed;
             Bridge.RunReport? finalReport = null;
-            await foreach (var ev in App.EngineClient.ApplyPlanAsync(
-                plan, cleanupRequested, verifyHash: false, _currentSettings))
+            try
             {
-                if (ev.EventKind == "done" && ev.Result != null)
+                await foreach (var ev in App.EngineClient.ApplyPlanAsync(
+                    plan, cleanupRequested, verifyHash: false, _currentSettings))
                 {
-                    finalReport = ev.Result;
+                    if (ev.EventKind == "done" && ev.Result != null)
+                    {
+                        finalReport = ev.Result;
+                    }
+                    else
+                    {
+                        ApplyProgressControl.UpdateForEvent(ev);
+                    }
                 }
+            }
+            finally
+            {
+                ApplyProgressControl.Hide();
             }
 
             if (finalReport != null)

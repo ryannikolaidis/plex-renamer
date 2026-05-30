@@ -1,0 +1,50 @@
+<UserControl x:Class="PlexRenamer.Views.ApplyProgress"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             Visibility="Collapsed">
+    <Border Background="{DynamicResource ControlFillColorDefaultBrush}"
+            BorderBrush="{DynamicResource ControlElevationBorderBrush}"
+            BorderThickness="1"
+            CornerRadius="4"
+            Padding="16,12">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <ui:TextBlock x:Name="HeadlineText"
+                              Grid.Column="0"
+                              FontTypography="BodyStrong"
+                              Text="Applying..." />
+                <ui:TextBlock x:Name="CountText"
+                              Grid.Column="1"
+                              FontTypography="Body"
+                              Text="0 / 0"
+                              VerticalAlignment="Center" />
+            </Grid>
+
+            <ProgressBar x:Name="Bar"
+                         Grid.Row="1"
+                         Margin="0,8,0,4"
+                         Minimum="0"
+                         Maximum="100"
+                         Value="0"
+                         Height="6" />
+
+            <ui:TextBlock x:Name="CurrentFileText"
+                          Grid.Row="2"
+                          FontTypography="Caption"
+                          Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                          TextTrimming="CharacterEllipsis"
+                          Text="" />
+        </Grid>
+    </Border>
+</UserControl>

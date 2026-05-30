@@ -48,7 +48,7 @@ from plex_renamer.config.settings import Settings
 from plex_renamer.daemon import orchestrator as orch
 from plex_renamer.daemon import schemas
 from plex_renamer.daemon.orchestrator import Row, TMDBLike
-from plex_renamer.executor.copy import apply_plan as engine_apply_plan
+from plex_renamer.executor.copy import apply_plan_iter as engine_apply_plan_iter
 from plex_renamer.executor.journal import Journal
 from plex_renamer.executor.undo import undo_batch as engine_undo_batch
 from plex_renamer.parser.extract import parse_tree
@@ -456,18 +456,25 @@ def build_plan(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def apply_plan(params: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    """Streaming method: apply a plan, yield progress, end with the result.
+    """Streaming method: apply a plan, yield per-op progress, end with the result.
 
-    Yields:
+    Drives its yields directly from
+    :func:`plex_renamer.executor.copy.apply_plan_iter`, so each
+    ``op_started`` event lands BEFORE the corresponding ``shutil.copy2``
+    runs and the matching ``op_verified`` / ``op_failed`` lands AFTER —
+    the shell sees per-op cadence even when individual copies take
+    minutes (large video files across drives).
 
-    1. Zero or more progress notifications of the form
-       ``{"event": "op_started" | "op_verified" | "op_failed", ...}``.
-    2. A final ``{"event": "done", "result": <RunReport>}`` which the
-       server unwraps as the JSON-RPC ``result`` of the request.
+    Event shapes (wire format identical to the engine's iterator
+    output, plus the request id wrapping done by the server):
 
-    The server detects the ``"done"`` sentinel and emits it as the
-    final response; everything else is emitted as a JSON-RPC
-    ``progress`` notification (no ``id``).
+    * ``{"event": "op_started", "op_index", "total_ops", "source",
+      "target", "total_bytes"}``
+    * ``{"event": "op_verified", "op_index", "total_ops", "source",
+      "target", "bytes"}``
+    * ``{"event": "op_failed", "op_index", "total_ops", "source",
+      "target", "error"}``
+    * ``{"event": "done", "result": <RunReport>}`` — terminal.
     """
     plan_dict = params.get("plan")
     if not isinstance(plan_dict, dict):
@@ -478,49 +485,24 @@ def apply_plan(params: dict[str, Any]) -> Iterator[dict[str, Any]]:
     journal_dir_override = _journal_dir_override()
     journal_dir = journal_dir_override or (app_config_dir() / "journals")
 
-    # Stream a start event per op so the shell can render a progress bar.
-    # We don't have op-level callbacks in the executor, so we emit
-    # "op_started" before the apply call and rely on the journal as the
-    # authoritative outcome ledger after. This is the same pattern the
-    # GUI's run_report uses post-hoc.
-    for idx, op in enumerate(plan.ops):
-        yield {
-            "event": "op_started",
-            "op_index": idx,
-            "source": str(op.source),
-            "target": str(op.target),
-        }
-
-    result = engine_apply_plan(
+    error_messages: list[str] = []
+    result = None
+    for event in engine_apply_plan_iter(
         plan,
         journal_dir=journal_dir,
         cleanup=cleanup,
         verify_hash=verify_hash,
-    )
+    ):
+        kind = event.get("event")
+        if kind == "done":
+            result = event["result"]
+            break
+        if kind == "op_failed" and event.get("error"):
+            error_messages.append(event["error"])
+        yield event
 
-    # Walk the journal to surface per-op outcomes.
-    error_messages: list[str] = []
-    try:
-        journal = Journal.load(result.journal_path)
-    except (OSError, ValueError):
-        journal = None
-    if journal is not None:
-        for entry in journal.entries:
-            if entry.status == "failed" and entry.error:
-                error_messages.append(entry.error)
-                yield {
-                    "event": "op_failed",
-                    "source": entry.source,
-                    "target": entry.target,
-                    "error": entry.error,
-                }
-            elif entry.status == "verified":
-                yield {
-                    "event": "op_verified",
-                    "source": entry.source,
-                    "target": entry.target,
-                    "bytes": entry.bytes,
-                }
+    if result is None:
+        raise RuntimeError("apply_plan_iter exhausted without a 'done' event")
 
     report: dict[str, Any] = {
         "succeeded": result.succeeded,

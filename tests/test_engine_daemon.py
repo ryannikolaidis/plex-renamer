@@ -710,6 +710,94 @@ def test_apply_plan_streams_progress_and_done(
     assert report["succeeded"] == 1
     assert report["failed"] == 0
     assert Path(report["journal_path"]).exists()
+    # Progress events carry the total_ops + op_index pair the shell needs
+    # for a progress bar; the engine sets these on every emit.
+    started = [p for p in progress if p["params"].get("event") == "op_started"][0]
+    assert started["params"]["op_index"] == 0
+    assert started["params"]["total_ops"] == 1
+
+
+def test_apply_plan_interleaves_started_and_verified(
+    fake_tmdb: FakeTMDB, daemon_config_dir: Path, tmp_path: Path
+) -> None:
+    """For an N-op plan the daemon emits op_started_i BEFORE op_verified_i,
+    not all op_started_* before any op_verified_*. Interleaving is the
+    load-bearing property that lets the shell render live progress
+    during a multi-minute video-file copy instead of waiting for the
+    whole batch to finish.
+    """
+    ops: list[dict[str, object]] = []
+    for i in range(3):
+        src = tmp_path / "src" / f"Matrix-{i}.mkv"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"hello")
+        target = (
+            tmp_path
+            / "movies"
+            / f"The Matrix ({1999 + i}) {{tmdb-603}}"
+            / f"The Matrix ({1999 + i}) {{tmdb-603}}.mkv"
+        )
+        ops.append(
+            {
+                "source": str(src),
+                "target": str(target),
+                "kind": "movie",
+                "anchor": "tmdb-603",
+                "edition": None,
+                "confidence": 0.9,
+                "sidecars": [],
+                "warnings": [],
+                "detected_editions": [],
+            }
+        )
+    plan_dict = {
+        "ops": ops,
+        "collisions": [],
+        "skipped": [],
+        "movies_root": str(tmp_path / "movies"),
+        "tv_root": str(tmp_path / "tv"),
+        "input_root": str(tmp_path / "src"),
+        "apply_editions": False,
+        "warnings": [],
+    }
+
+    progress, _final = _drive_streaming(
+        {
+            "jsonrpc": "2.0",
+            "id": 81,
+            "method": "apply_plan",
+            "params": {"plan": plan_dict, "cleanup": False, "verify_hash": False},
+        }
+    )
+    # Walk the event stream and assert started_i appears BEFORE verified_i
+    # for every op_index, AND that at least one started_j (j > i) appears
+    # AFTER verified_i — i.e. the events are properly interleaved op-by-op
+    # rather than batched as "all starts then all verifieds".
+    seen_started: set[int] = set()
+    seen_verified: set[int] = set()
+    interleaved = False
+    for p in progress:
+        params = p["params"]
+        kind = params.get("event")
+        idx = params.get("op_index")
+        if kind == "op_started":
+            assert idx is not None and idx not in seen_verified, (
+                f"op_started {idx} arrived after op_verified {idx}"
+            )
+            if seen_verified:
+                interleaved = True
+            seen_started.add(idx)
+        elif kind == "op_verified":
+            assert idx is not None and idx in seen_started, (
+                f"op_verified {idx} arrived before op_started {idx}"
+            )
+            seen_verified.add(idx)
+    assert seen_started == {0, 1, 2}
+    assert seen_verified == {0, 1, 2}
+    assert interleaved, (
+        "all op_started events arrived before any op_verified — the daemon "
+        "is still in batch-emit mode, not per-op streaming"
+    )
 
 
 def test_undo_batch_reverts(fake_tmdb: FakeTMDB, daemon_config_dir: Path, tmp_path: Path) -> None:

@@ -499,8 +499,12 @@ public sealed class EngineClient : IEngineClient
             EventKind = paramsEl.TryGetProperty("event", out var evEl) ? (evEl.GetString() ?? "unknown") : "unknown",
             OpIndex = paramsEl.TryGetProperty("op_index", out var oi) && oi.ValueKind == JsonValueKind.Number
                 ? oi.GetInt32() : null,
+            TotalOps = paramsEl.TryGetProperty("total_ops", out var to) && to.ValueKind == JsonValueKind.Number
+                ? to.GetInt32() : null,
             Source = paramsEl.TryGetProperty("source", out var src) ? src.GetString() : null,
             Target = paramsEl.TryGetProperty("target", out var tgt) ? tgt.GetString() : null,
+            TotalBytes = paramsEl.TryGetProperty("total_bytes", out var tb) && tb.ValueKind == JsonValueKind.Number
+                ? tb.GetInt64() : null,
             Bytes = paramsEl.TryGetProperty("bytes", out var b) && b.ValueKind == JsonValueKind.Number
                 ? b.GetInt64() : null,
             Error = paramsEl.TryGetProperty("error", out var err) ? err.GetString() : null,
