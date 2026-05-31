@@ -35,9 +35,11 @@ from pathlib import Path
 from typing import Protocol
 
 from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -228,8 +230,25 @@ class MainWindow(QMainWindow):
         self._edit_pane.imdb_resolve_requested.connect(self.imdb_resolve_requested)
         self._source_panel.group_clicked.connect(self.group_clicked)
         self._collision_review.reanchor_requested.connect(self.reanchor_requested)
+        # New context-menu signals from SourcePanel: prompt for input
+        # and route via existing handlers / model mutations.
+        self._source_panel.set_imdb_requested.connect(self._on_set_imdb_requested)
+        self._source_panel.skip_toggle_requested.connect(self._on_skip_toggle_requested)
+
+        # Keyboard shortcuts: Ctrl+P → Preview, Ctrl+Enter → Apply,
+        # Ctrl+, → Settings. The shortcuts target the buttons' clicked
+        # signal so they go through the same disabled-state guard.
+        QShortcut(QKeySequence("Ctrl+P"), self).activated.connect(self._on_preview_clicked)
+        QShortcut(QKeySequence("Ctrl+Return"), self).activated.connect(self._on_apply_clicked)
+        QShortcut(QKeySequence("Ctrl+,"), self).activated.connect(self._open_settings)
+
+        # Wire model changes to the Apply enable-state refresh so the
+        # button enables/disables as rows / roots / skip state change.
+        self._item_model.rows_reset.connect(self._refresh_apply_state)
+        self._item_model.row_changed.connect(lambda *_args: self._refresh_apply_state())
 
         self._build_layout()
+        self._refresh_apply_state()
 
     # ----- Layout ---------------------------------------------------------
 
@@ -354,6 +373,51 @@ class MainWindow(QMainWindow):
     def _on_row_clicked(self, source_path: Path) -> None:
         self._edit_pane.load_row(source_path)
 
+    # ----- Context-menu signal handlers -----------------------------------
+
+    def _on_set_imdb_requested(self, source_path: Path) -> None:
+        """Prompt for an IMDb ID, then route through the existing resolver signal."""
+        text, ok = QInputDialog.getText(
+            self,
+            "Set IMDb ID",
+            f"IMDb ID for '{source_path.name}' (e.g. tt0000000):",
+        )
+        if not ok or not text.strip():
+            return
+        self.imdb_resolve_requested.emit(source_path, text.strip())
+
+    def _on_skip_toggle_requested(self, paths: list[Path], new_value: bool) -> None:
+        """Apply a Skip toggle to every path in the selection."""
+        for path in paths:
+            self._item_model.set_skip(path, new_value)
+        self._refresh_apply_state()
+
+    # ----- Apply enable-state guard ---------------------------------------
+
+    def _refresh_apply_state(self) -> None:
+        """Enable Apply only when prerequisites are met.
+
+        Pre-conditions: at least one row loaded, at least one library
+        root set, and at least one row not marked Skip. The button's
+        tooltip surfaces the missing precondition so the user knows
+        why it's disabled.
+        """
+        rows = self._item_model.rows()
+        has_rows = len(rows) > 0
+        roots_set = bool(self._settings.movies_root or self._settings.tv_root)
+        has_unskipped = any(not r.skip for r in rows)
+        can_apply = has_rows and roots_set and has_unskipped
+        self._apply_btn.setEnabled(can_apply)
+        if can_apply:
+            tooltip = "Apply the plan to disk. (Ctrl+Enter)"
+        elif not has_rows:
+            tooltip = "Drop files first."
+        elif not roots_set:
+            tooltip = "Set library roots in Settings."
+        else:
+            tooltip = "All rows are marked Skip."
+        self._apply_btn.setToolTip(tooltip)
+
     # ----- Settings -------------------------------------------------------
 
     def _open_settings(self) -> None:
@@ -363,6 +427,7 @@ class MainWindow(QMainWindow):
         # LibraryRootsDialog; refresh the labels so the change shows up
         # immediately in the main window.
         self._refresh_root_labels()
+        self._refresh_apply_state()
 
     # ----- Library roots --------------------------------------------------
 
@@ -393,6 +458,7 @@ class MainWindow(QMainWindow):
             self._settings.movies_root = chosen
             self._settings.save()
             self._refresh_root_labels()
+            self._refresh_apply_state()
             self.library_roots_changed.emit(
                 self._settings.movies_root or "", self._settings.tv_root or ""
             )
@@ -403,6 +469,7 @@ class MainWindow(QMainWindow):
             self._settings.tv_root = chosen
             self._settings.save()
             self._refresh_root_labels()
+            self._refresh_apply_state()
             self.library_roots_changed.emit(
                 self._settings.movies_root or "", self._settings.tv_root or ""
             )
