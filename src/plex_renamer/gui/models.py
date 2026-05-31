@@ -203,6 +203,11 @@ class ItemModel(QObject):
                 return r
         return None
 
+    def group_for(self, source_path: Path) -> str | None:
+        """Return the group key for ``source_path``, or None if not loaded."""
+        row = self.row_for(source_path)
+        return row.group_key if row is not None else None
+
     def groups(self) -> dict[str, list[ItemRow]]:
         """Return rows grouped by ``group_key``, preserving insertion order."""
         out: dict[str, list[ItemRow]] = {}
