@@ -32,8 +32,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -48,6 +49,8 @@ from PySide6.QtWidgets import (
 
 from plex_renamer.config.settings import Settings
 from plex_renamer.executor.cleanup import deletion_preview
+from plex_renamer.gui.apply_progress import ApplyProgressWidget
+from plex_renamer.gui.apply_worker import ApplyWorker
 from plex_renamer.gui.cleanup_confirm_modal import CleanupConfirmModal
 from plex_renamer.gui.collision_review import CollisionReview
 from plex_renamer.gui.drop_zone import DropZone
@@ -59,6 +62,27 @@ from plex_renamer.gui.source_panel import SourcePanel
 from plex_renamer.gui.target_panel import TargetPanel
 from plex_renamer.parser.extract import parse_tree
 from plex_renamer.parser.models import ParseResult
+from plex_renamer.planner.models import RenamePlan
+
+
+class ApplyAdapter(Protocol):
+    """Streaming-apply adapter contract.
+
+    The Orchestrator implements this; the MainWindow runs the apply
+    pass via the adapter so the file-copy work happens on a worker
+    thread while progress events stream back to the GUI thread.
+    """
+
+    def prepare_apply(
+        self, item_model: ItemModel, input_root: Path
+    ) -> tuple[RenamePlan | None, RunReport | None]: ...
+
+    def apply_journal_dir(self) -> Path: ...
+
+    def apply_cleanup_enabled(self) -> bool: ...
+
+    def build_run_report(self, plan: RenamePlan, result: object) -> RunReport: ...
+
 
 # A function that takes a list of input paths and yields ParseResults.
 # Tests inject a deterministic one; production wires ``parse_tree``.
@@ -180,6 +204,18 @@ class MainWindow(QMainWindow):
 
         self._refresh_root_labels()
 
+        # Streaming-apply plumbing. The adapter is set after construction
+        # via :meth:`set_apply_adapter` (typically from
+        # ``Orchestrator.connect``). When the adapter is present the
+        # apply pass runs on a QThread via :class:`ApplyWorker` so the
+        # GUI thread stays responsive; when it's None we fall back to
+        # the legacy synchronous ``apply_fn`` path used by tests.
+        self._apply_adapter: ApplyAdapter | None = None
+        self._apply_thread: QThread | None = None
+        self._apply_worker: ApplyWorker | None = None
+        self._apply_plan_in_flight: RenamePlan | None = None
+        self._apply_progress = ApplyProgressWidget()
+
         # Wire panels to edit pane.
         self._source_panel.row_clicked.connect(self._on_row_clicked)
         self._target_panel.row_clicked.connect(self._on_row_clicked)
@@ -267,6 +303,10 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(central)
         layout.addWidget(self._drop_zone)
         layout.addWidget(body, stretch=1)
+        # Apply-progress widget sits between the body and the roots row.
+        # Hidden by default; visible only while a streaming apply pass
+        # is in flight, so it doesn't claim chrome when idle.
+        layout.addWidget(self._apply_progress)
         layout.addLayout(roots_row)
         layout.addLayout(bottom)
         self.setCentralWidget(central)
@@ -421,17 +461,118 @@ class MainWindow(QMainWindow):
                 "Resolve all collisions in the review panel before applying.",
             )
             return
+        # Streaming path: the adapter prepares the plan on the GUI thread
+        # (model mutations stay here), then ApplyWorker drives
+        # apply_plan_iter off a QThread so the GUI stays responsive
+        # during multi-minute video-file copies.
+        if self._apply_adapter is not None:
+            self._do_streaming_apply()
+            return
         if self._apply_fn is None:
-            # No engine wired (e.g. running in headless test without an
-            # apply_fn). Emit the signal but skip the actual call.
+            # No engine wired (e.g. headless test). Emit the signal but
+            # skip the actual call.
             self.applied.emit()
             return
-        # The apply_fn is the engine-side adapter; it returns a RunReport
-        # for the GUI to render.
+        # Legacy synchronous path: kept for tests that inject an
+        # ``apply_fn`` directly. Blocks the GUI thread.
         report = self._apply_fn(self._item_model, self._settings_root_or_default())
         self._last_journal = report.journal_path
         self._run_report.set_report(report)
         self.applied.emit()
+
+    def _do_streaming_apply(self) -> None:
+        """Run the apply pass on a worker thread, streaming progress.
+
+        The adapter's :meth:`prepare_apply` either returns a resolved
+        plan (apply proceeds) or an early-exit :class:`RunReport`
+        (collisions block the apply; render the report and stop).
+        """
+        adapter = self._apply_adapter
+        assert adapter is not None  # gated by caller
+        input_root = self._settings_root_or_default()
+        plan, early = adapter.prepare_apply(self._item_model, input_root)
+        if early is not None:
+            self._last_journal = early.journal_path
+            self._run_report.set_report(early)
+            self.applied.emit()
+            return
+        assert plan is not None  # prepare_apply contract
+
+        # Disable Apply + show the progress widget before spawning the
+        # worker so the user sees the chrome change at click time.
+        self._apply_btn.setEnabled(False)
+        self._apply_progress.begin(len(plan.ops))
+        self._apply_plan_in_flight = plan
+
+        self._apply_thread = QThread(self)
+        self._apply_worker = ApplyWorker(
+            plan,
+            journal_dir=adapter.apply_journal_dir(),
+            cleanup=adapter.apply_cleanup_enabled(),
+            verify_hash=False,
+        )
+        self._apply_worker.moveToThread(self._apply_thread)
+        # Connect signal-slots BEFORE start so the slots are bound when
+        # the worker emits its first op_event. Cross-thread signals use
+        # Qt.QueuedConnection by default, which marshals delivery back
+        # to the GUI thread's event loop.
+        self._apply_thread.started.connect(self._apply_worker.run)
+        self._apply_worker.op_event.connect(self._on_apply_op_event)
+        self._apply_worker.apply_finished.connect(self._on_apply_finished)
+        self._apply_worker.apply_failed.connect(self._on_apply_failed)
+        # Always tear down the thread when the worker finishes (success
+        # or failure) so we don't leak QThread instances across runs.
+        self._apply_worker.apply_finished.connect(self._apply_thread.quit)
+        self._apply_worker.apply_failed.connect(self._apply_thread.quit)
+        self._apply_thread.finished.connect(self._teardown_apply_thread)
+        self._apply_thread.start()
+
+    def _on_apply_op_event(self, event: dict) -> None:
+        # Runs on the GUI thread (queued signal). Update the progress
+        # widget; the worker thread keeps driving the executor iterator.
+        self._apply_progress.update_for_event(event)
+
+    def _on_apply_finished(self, result: object) -> None:
+        plan = self._apply_plan_in_flight
+        assert plan is not None  # invariant: only emitted after _do_streaming_apply
+        assert self._apply_adapter is not None
+        report = self._apply_adapter.build_run_report(plan, result)
+        self._last_journal = report.journal_path
+        self._run_report.set_report(report)
+        self._apply_progress.hide_widget()
+        self._apply_btn.setEnabled(True)
+        self.applied.emit()
+
+    def _on_apply_failed(self, message: str) -> None:
+        # The executor iterator raised. Hide the progress widget and
+        # surface a modal so the user knows the apply didn't run to
+        # completion. RunReport stays empty (no journal to undo).
+        self._apply_progress.hide_widget()
+        self._apply_btn.setEnabled(True)
+        QMessageBox.critical(
+            self,
+            "Apply failed",
+            f"The apply pass raised an exception:\n\n{message}",
+        )
+
+    def _teardown_apply_thread(self) -> None:
+        # Both worker and thread cleanup; called from QThread.finished.
+        if self._apply_worker is not None:
+            self._apply_worker.deleteLater()
+            self._apply_worker = None
+        if self._apply_thread is not None:
+            self._apply_thread.deleteLater()
+            self._apply_thread = None
+        self._apply_plan_in_flight = None
+
+    def set_apply_adapter(self, adapter: ApplyAdapter) -> None:
+        """Wire the streaming-apply adapter.
+
+        Typically called from ``Orchestrator.connect``. Without this,
+        :meth:`_do_apply` falls back to the legacy synchronous
+        ``apply_fn`` path.
+        """
+        self._apply_adapter = adapter
 
     def _settings_root_or_default(self) -> Path:
         """Return a usable input_root for the apply pass.
