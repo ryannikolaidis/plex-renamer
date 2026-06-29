@@ -32,6 +32,7 @@ from plex_renamer.diagnostics.overrides import OverrideSet, resolve_anchor_to_ca
 from plex_renamer.parser.extract import parse_tree
 from plex_renamer.parser.models import ParseResult
 from plex_renamer.parser.show_name import derive_show_name
+from plex_renamer.planner.show_anchor import match_episode
 from plex_renamer.tmdb.models import Candidate, Episode, MovieResult, TVResult
 from plex_renamer.tmdb.ranking import cleaned_query_variants
 
@@ -45,11 +46,16 @@ class RowReport:
     parsed_year: int | None
     parsed_season: int | None
     parsed_episode: int | None
+    parsed_episode_title: str | None
     group_key: str
     top_candidate: Candidate | None
     alternatives: list[Candidate]
     queries_tried: list[str]
     flags: list[str]
+    # Episode-level mapping for TV rows. Populated when a TV show
+    # anchor resolved AND TMDB's season list was reachable. None for
+    # movies and for TV rows without a resolved show or no S/E info.
+    matched_episode: Episode | None = None
 
 
 @dataclass(frozen=True)
@@ -161,6 +167,20 @@ def build_report(
             progress(idx, total, parsed.source_path)
         rows.append(_report_one_row(parsed, source, search_movie, search_tv, top_n))
 
+    # Episode-level mapping for TV rows: for each row with a resolved
+    # show anchor, look up the corresponding TMDB episode using the
+    # same fuzzy-title-first / S+E-tiebreaker rule the planner uses at
+    # apply time. This catches off-by-one numbering, regional episode
+    # splits, and parser-title vs TMDB-title disagreements that the
+    # show-anchor confidence alone doesn't surface. Skipped silently
+    # when get_season is None (no TMDB-by-id lookups available).
+    if get_season is not None:
+        rows = _attach_episode_matches(
+            rows,
+            parsed_lookup={r.source_path: p for r, p in zip(rows, candidate_rows, strict=True)},
+            get_season=get_season,
+        )
+
     # Apply user-supplied overrides AFTER the initial resolver pass so
     # the report shows what changed. Row-level overrides win over
     # group-level overrides on the same row.
@@ -227,6 +247,7 @@ def _report_one_row(
             parsed_year=parsed.year,
             parsed_season=parsed.season,
             parsed_episode=parsed.episode,
+            parsed_episode_title=parsed.episode_title,
             group_key=group_key,
             top_candidate=None,
             alternatives=[],
@@ -286,12 +307,114 @@ def _report_one_row(
         parsed_year=parsed.year,
         parsed_season=parsed.season,
         parsed_episode=parsed.episode,
+            parsed_episode_title=parsed.episode_title,
         group_key=group_key,
         top_candidate=top,
         alternatives=list(alts),
         queries_tried=queries_run,
         flags=flags,
     )
+
+
+def _attach_episode_matches(
+    rows: list[RowReport],
+    *,
+    parsed_lookup: dict[Path, ParseResult],
+    get_season: GetSeasonFn,
+) -> list[RowReport]:
+    """Resolve every TV row's specific TMDB episode via the planner's matcher.
+
+    Uses :func:`plex_renamer.planner.show_anchor.match_episode` so the
+    report's episode mapping is identical to what the apply pass would
+    produce. Flags added per row:
+
+    * ``episode-renumbered``: TMDB's episode at the matched title is
+      at a different (S, E) than the parser extracted from the
+      filename. Usually means the literal S/E in the filename
+      disagrees with TMDB's canonical numbering (regional splits,
+      anime ordering, classic Doctor Who).
+    * ``episode-title-mismatch``: parsed episode title and TMDB
+      episode title don't loosely match. Often benign (parser may
+      have truncated or the file is mis-named).
+    * ``episode-unknown``: no episode could be matched at all.
+    * ``episode-synthesized``: matched on S/E only; TMDB returned no
+      episode at that position so the planner falls back to a
+      synthetic Episode with the parsed title (the planner's
+      last-ditch path).
+    """
+    new_rows: list[RowReport] = []
+    for row in rows:
+        if (
+            row.kind != "tv"
+            or row.top_candidate is None
+            or row.top_candidate.anchor_kind != "tmdb"
+        ):
+            new_rows.append(row)
+            continue
+        parsed = parsed_lookup.get(row.source_path)
+        if parsed is None:
+            new_rows.append(row)
+            continue
+        try:
+            ep = match_episode(parsed, row.top_candidate, fetch_season=get_season)
+        except Exception:
+            ep = None
+        new_flags = list(row.flags)
+        if ep is None:
+            new_flags.append("episode-unknown")
+        else:
+            # Synthesized when the matcher returned an Episode with the
+            # parsed title (no real TMDB episode under that S/E).
+            if (
+                parsed.episode_title
+                and ep.title == parsed.episode_title
+                and parsed.season == ep.season
+                and parsed.episode == ep.episode
+            ):
+                # Could be a real match OR a synthesized one. Detect
+                # by checking whether the matched (S, E) exists in
+                # the show's known episode list.
+                known = row.top_candidate.episode_list or ()
+                if known and not any(
+                    e.season == ep.season and e.episode == ep.episode for e in known
+                ):
+                    new_flags.append("episode-synthesized")
+            # Renumbered: TMDB places this episode at a different (S, E).
+            if (
+                parsed.season is not None
+                and parsed.episode is not None
+                and (parsed.season != ep.season or parsed.episode != ep.episode)
+            ):
+                new_flags.append("episode-renumbered")
+            # Title mismatch: parsed and TMDB titles don't loosely
+            # agree (rapidfuzz token_set_ratio < 60).
+            if parsed.episode_title and ep.title and _loose_title_score(parsed.episode_title, ep.title) < 60:
+                new_flags.append("episode-title-mismatch")
+        new_rows.append(
+            RowReport(
+                source_path=row.source_path,
+                raw_filename=row.raw_filename,
+                kind=row.kind,
+                parsed_title=row.parsed_title,
+                parsed_year=row.parsed_year,
+                parsed_season=row.parsed_season,
+                parsed_episode=row.parsed_episode,
+                parsed_episode_title=row.parsed_episode_title,
+                group_key=row.group_key,
+                top_candidate=row.top_candidate,
+                alternatives=row.alternatives,
+                queries_tried=row.queries_tried,
+                flags=new_flags,
+                matched_episode=ep,
+            )
+        )
+    return new_rows
+
+
+def _loose_title_score(a: str, b: str) -> float:
+    from rapidfuzz import fuzz
+
+    return float(fuzz.token_set_ratio(a.lower(), b.lower()))
 
 
 def _apply_overrides(
@@ -368,6 +491,7 @@ def _apply_overrides(
                 parsed_year=row.parsed_year,
                 parsed_season=row.parsed_season,
                 parsed_episode=row.parsed_episode,
+                parsed_episode_title=row.parsed_episode_title,
                 group_key=row.group_key,
                 top_candidate=cand,
                 alternatives=row.alternatives,
@@ -485,12 +609,23 @@ def _row_to_dict(r: RowReport) -> dict[str, Any]:
             "year": r.parsed_year,
             "season": r.parsed_season,
             "episode": r.parsed_episode,
+            "episode_title": r.parsed_episode_title,
         },
         "group_key": r.group_key,
         "top_candidate": _candidate_to_dict(r.top_candidate) if r.top_candidate else None,
         "alternatives": [_candidate_to_dict(c) for c in r.alternatives],
         "queries_tried": list(r.queries_tried),
         "flags": list(r.flags),
+        "matched_episode": (
+            {
+                "season": r.matched_episode.season,
+                "episode": r.matched_episode.episode,
+                "title": r.matched_episode.title,
+                "air_date": r.matched_episode.air_date,
+            }
+            if r.matched_episode is not None
+            else None
+        ),
     }
 
 
