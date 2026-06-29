@@ -212,39 +212,46 @@ def test_e2e_lazarus_2_recovery_screenshots(qapp, qtbot, tmp_path, screenshots_d
     QApplication.processEvents()
     _save_screenshot(window, screenshots_dir, "02_after_drop_lazarus_2")
 
-    # ASSERTIONS on Step 2: the group label MUST show "Lazarus_2", not
-    # the first episode's filename or title. This is the Bug A
-    # regression gate — without notify_rows_reset after the backfill,
-    # the source panel keeps the original (None show_name_hint) labels.
+    # ASSERTIONS on Step 2: the group label must NOT leak the first
+    # episode's filename / title. The Bug A regression gate. Under the
+    # pre-pooled-search resolver, ``Lazarus_2`` returned no TMDB hits
+    # and the panel rendered the folder name verbatim. The pooled-
+    # variant resolver now strips the trailing ``_2`` and matches
+    # ``Lazarus``, so this fixture auto-resolves to "Lazarus (2025)"
+    # — strictly better behavior, and the same anti-leak invariant
+    # still holds: the label must not show "Goodbye Cruel World".
     source_panel = window.source_panel()
     assert source_panel._tree.topLevelItemCount() == 1, (
         f"expected 1 group, got {source_panel._tree.topLevelItemCount()}"
     )
     group_item = source_panel._tree.topLevelItem(0)
     label = group_item.text(0)
-    assert "Lazarus_2" in label, f"Bug A regression: group label missing show name: {label!r}"
     assert "Goodbye Cruel World" not in label, (
         f"Bug A regression: group label leaked episode title: {label!r}"
     )
+    assert "[S01.E01]" not in label, f"Bug A regression: group label leaked filename: {label!r}"
+    # The label should carry the resolved show name (Lazarus 2025) OR
+    # the folder name (Lazarus_2) — both are acceptable, neither is the
+    # episode title.
+    assert "Lazarus" in label, f"group label should carry the show name: {label!r}"
     # 13 leaves, one per file.
     assert group_item.childCount() == 13, (
         f"expected 13 episode leaves under the group, got {group_item.childCount()}"
     )
 
-    # The TARGET panel group label must ALSO show "Lazarus_2", not the
-    # first row's episode filename. Without the show_name_hint fallback
-    # in target_panel._make_group_item, unresolved TV groups collapse to
-    # the first episode's title_candidate (e.g. "Goodbye Cruel World")
-    # or raw_filename (e.g. "[S01.E01] Goodbye Cruel World.mp4") —
-    # that's the v0.1.3 user-visible bug.
+    # The TARGET panel group label must ALSO not leak the first row's
+    # episode filename — same anti-leak invariant. With the pooled
+    # resolver, the label is the resolved title "Lazarus (2025)";
+    # without resolution, the show_name_hint fallback would print
+    # "Lazarus_2". Either is acceptable; neither is the episode title.
     target_panel = window.target_panel()
     assert target_panel._tree.topLevelItemCount() == 1, (
         f"expected 1 target group, got {target_panel._tree.topLevelItemCount()}"
     )
     target_group_unresolved = target_panel._tree.topLevelItem(0)
     target_label_unresolved = target_group_unresolved.text(0)
-    assert "Lazarus_2" in target_label_unresolved, (
-        f"target panel group label leaked first episode: {target_label_unresolved!r}"
+    assert "Lazarus" in target_label_unresolved, (
+        f"target panel group label missing show name: {target_label_unresolved!r}"
     )
     assert "Goodbye Cruel World" not in target_label_unresolved, (
         f"target panel group label leaked episode title: {target_label_unresolved!r}"

@@ -48,6 +48,7 @@ from rapidfuzz import fuzz
 
 from plex_renamer.tmdb.errors import TMDBError
 from plex_renamer.tmdb.models import Candidate, MovieResult, TVResult
+from plex_renamer.tmdb.ranking import cleaned_query_variants, rank_candidates
 
 DEFAULT_OMDB_BASE_URL = "https://www.omdbapi.com/"
 DEFAULT_MIN_TMDB_CONFIDENCE = 0.6
@@ -99,24 +100,79 @@ class IMDbFallbackResolver:
 
     def resolve_movie(self, title: str, year: int | None) -> Candidate | None:
         """Resolve a movie title+year. Returns ``None`` if no path produced a hit."""
-        results = self._tmdb.search_movie(title, year)
-        best = _best_movie_match(results, title, year)
-        if best is not None:
-            movie, confidence = best
-            if confidence >= self._min_conf:
-                return _movie_to_candidate(movie, confidence)
+        pooled = self.search_movie_pooled(title, year)
+        if pooled:
+            best = pooled[0]
+            if best.confidence >= self._min_conf:
+                return best
         # TMDB fallback path: ask OMDB for an IMDb id, then re-query TMDB.
         return self._imdb_fallback("movie", title, year)
 
     def resolve_tv(self, title: str, year: int | None) -> Candidate | None:
         """Resolve a TV title+year. Returns ``None`` if no path produced a hit."""
-        results = self._tmdb.search_tv(title, year)
-        best = _best_tv_match(results, title, year)
-        if best is not None:
-            show, confidence = best
-            if confidence >= self._min_conf:
-                return _tv_to_candidate(show, confidence)
+        pooled = self.search_tv_pooled(title, year)
+        if pooled:
+            best = pooled[0]
+            if best.confidence >= self._min_conf:
+                return best
         return self._imdb_fallback("tv", title, year)
+
+    def search_movie_pooled(self, title: str, year: int | None) -> list[Candidate]:
+        """Search every cleaned-query variant; return ranked, deduped candidates.
+
+        Without this, a parser-produced title like ``Spaceballs_1`` would
+        search TMDB exactly once for ``Spaceballs_1`` and miss the real
+        ``Spaceballs`` because the loose-suffix query happens to hit a
+        different record. Pooling across variants merges results from
+        every cleaned form so the rank step sees them all.
+
+        The returned list is sorted by descending relevance (the
+        resolver's blended title+year score, then the public ranker's
+        prefix/word boost) and deduped by ``anchor_id``. Empty inputs
+        return an empty list.
+        """
+        if not title:
+            return []
+        pooled: list[MovieResult] = []
+        seen: set[int] = set()
+        for variant in cleaned_query_variants(title):
+            for r in self._tmdb.search_movie(variant, year):
+                if r.tmdb_id in seen:
+                    continue
+                seen.add(r.tmdb_id)
+                pooled.append(r)
+        if not pooled:
+            return []
+        scored = [
+            (r, _blend(_title_score(title, r.title), _year_score(year, r.year))) for r in pooled
+        ]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        candidates = [_movie_to_candidate(r, conf) for r, conf in scored]
+        # Apply the public ranker on top so exact-title matches outrank
+        # blended-equal candidates (e.g. ``Spaceballs`` over
+        # ``Spaceballs: The New One`` when both have year confidence).
+        return rank_candidates(title, candidates)
+
+    def search_tv_pooled(self, title: str, year: int | None) -> list[Candidate]:
+        """TV equivalent of :meth:`search_movie_pooled`."""
+        if not title:
+            return []
+        pooled: list[TVResult] = []
+        seen: set[int] = set()
+        for variant in cleaned_query_variants(title):
+            for r in self._tmdb.search_tv(variant, year):
+                if r.tmdb_id in seen:
+                    continue
+                seen.add(r.tmdb_id)
+                pooled.append(r)
+        if not pooled:
+            return []
+        scored = [
+            (r, _blend(_title_score(title, r.title), _year_score(year, r.year))) for r in pooled
+        ]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        candidates = [_tv_to_candidate(r, conf) for r, conf in scored]
+        return rank_candidates(title, candidates)
 
     # ----- Internals --------------------------------------------------------
 

@@ -114,8 +114,13 @@ def cleaned_query_variants(query: str) -> list[str]:
 
     push(query)
 
-    # Strip trailing _<digits> or -<digits>.
-    stripped_num = re.sub(r"[_-]\d+\s*$", "", query).strip()
+    # Strip a trailing duplicate-name marker: ``_<N>``, ``-<N>``, or
+    # `` <N>`` (the parser normalizes ``_`` to space before producing
+    # title_candidate, so ``Spaceballs_1.mp4`` arrives here as
+    # ``Spaceballs 1`` — and we still want ``Spaceballs`` as a variant).
+    # Bounded to 1-2 digits to avoid clobbering legitimate trailing
+    # years (``Apollo 13``, ``2010``) and four-digit identifiers.
+    stripped_num = re.sub(r"[_\-\s]\d{1,2}\s*$", "", query).strip()
     push(stripped_num)
 
     # Strip trailing parenthesized content. ``Lazarus (US)`` -> ``Lazarus``.

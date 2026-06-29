@@ -19,6 +19,7 @@ import sys
 from plex_renamer import __version__
 from plex_renamer.cli.apply_cmd import run_apply
 from plex_renamer.cli.plan_cmd import run_plan
+from plex_renamer.cli.report_cmd import add_subparser as add_report_subparser
 from plex_renamer.cli.undo_cmd import run_undo
 
 _UNKNOWN_ARG_EXIT = 2
@@ -78,6 +79,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_undo = sub.add_parser("undo", help="Undo a previously-applied batch.")
     p_undo.add_argument("--journal", required=True, help="Journal JSON path.")
 
+    # --- report (read-only diagnostic) ----------------------------------
+    add_report_subparser(sub)
+
     return parser
 
 
@@ -118,6 +122,14 @@ def app(argv: list[str] | None = None) -> int:
         return run_apply(parsed)
     if parsed.command == "undo":
         return run_undo(parsed)
+    # The ``report`` subcommand registers its own handler on the
+    # namespace via add_subparser → set_defaults(_handler=...).
+    handler = getattr(parsed, "_handler", None)
+    if callable(handler):
+        rc = handler(parsed)
+        if isinstance(rc, int):
+            return rc
+        return 0
 
     if not args:
         print("plex-renamer: pass --help to see available subcommands.")

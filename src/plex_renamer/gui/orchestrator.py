@@ -22,7 +22,6 @@ just implements the same five method names.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,37 +36,17 @@ from plex_renamer.gui.models import ItemModel, ItemRow, RunReport
 from plex_renamer.gui.show_anchor_picker import ShowAnchorPicker
 from plex_renamer.parser.extract import parse_tree
 from plex_renamer.parser.models import ParseResult
+
+# Re-exported for back-compat with callers that import
+# :func:`derive_show_name` from this module. The implementation lives
+# in :mod:`plex_renamer.parser.show_name` so the diagnostics CLI can
+# use the same rule without depending on the Qt GUI.
+from plex_renamer.parser.show_name import derive_show_name as derive_show_name  # noqa: F401
 from plex_renamer.planner.build import build_plan_from_pairs
 from plex_renamer.planner.models import RenamePlan
 from plex_renamer.tmdb.fallback import IMDbFallbackResolver
 from plex_renamer.tmdb.models import Candidate, Episode, MovieResult, TVResult
 from plex_renamer.tmdb.ranking import cleaned_query_variants, rank_candidates
-
-# Matches a directory name that looks like a season folder, not a show
-# name. ``s1``, ``S01``, ``Season 5``, ``Series 2``, ``Specials`` are all
-# season folders — when we're walking a parent_dirs chain looking for
-# the SHOW name, we skip these.
-_SEASON_FOLDER_RE = re.compile(
-    r"^(s|season\s*|series\s*)\d{1,2}$|^specials$",
-    re.IGNORECASE,
-)
-
-
-def derive_show_name(input_root: Path, parent_dirs: list[str]) -> str:
-    """Find the most likely TV show name from the path tree.
-
-    Walks ``parent_dirs`` left-to-right (closest to ``input_root`` first),
-    returning the first entry that does NOT look like a season folder
-    (``s1``, ``S01``, ``Season 1``, ``Series 1``, ``Specials``). Falls
-    back to ``input_root.name`` when every ``parent_dirs`` entry is
-    season-like — that case covers the user dropping ``MAX/Lazarus/``
-    directly, where ``parent_dirs`` is just ``["s1"]`` and the show name
-    lives on the drop root itself.
-    """
-    for d in parent_dirs:
-        if not _SEASON_FOLDER_RE.match(d.strip()):
-            return d
-    return input_root.name
 
 
 class _TMDBLike(Protocol):
