@@ -28,10 +28,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from plex_renamer.diagnostics.overrides import OverrideSet, resolve_anchor_to_candidate
 from plex_renamer.parser.extract import parse_tree
 from plex_renamer.parser.models import ParseResult
 from plex_renamer.parser.show_name import derive_show_name
-from plex_renamer.tmdb.models import Candidate
+from plex_renamer.tmdb.models import Candidate, Episode, MovieResult, TVResult
 from plex_renamer.tmdb.ranking import cleaned_query_variants
 
 
@@ -97,6 +98,13 @@ class ReportArtifact:
 # resolvers; tests inject fakes.
 PooledSearchFn = Callable[[str, int | None], list[Candidate]]
 
+# By-ID lookups used by the overrides flow to fetch the canonical
+# TMDB record for an --anchor override (so the report can show the
+# real title / year, not just the bare id).
+GetMovieFn = Callable[[int], MovieResult]
+GetTVFn = Callable[[int], TVResult]
+GetSeasonFn = Callable[[int, int], list[Episode]]
+
 
 def build_report(
     source: Path,
@@ -105,6 +113,10 @@ def build_report(
     search_tv: PooledSearchFn,
     top_n: int = 5,
     progress: Callable[[int, int, Path], None] | None = None,
+    overrides: OverrideSet | None = None,
+    get_movie: GetMovieFn | None = None,
+    get_tv: GetTVFn | None = None,
+    get_season: GetSeasonFn | None = None,
 ) -> ReportArtifact:
     """Walk ``source``, parse each item, run resolver, return a report.
 
@@ -148,6 +160,19 @@ def build_report(
         if progress is not None:
             progress(idx, total, parsed.source_path)
         rows.append(_report_one_row(parsed, source, search_movie, search_tv, top_n))
+
+    # Apply user-supplied overrides AFTER the initial resolver pass so
+    # the report shows what changed. Row-level overrides win over
+    # group-level overrides on the same row.
+    if overrides is not None and not overrides.is_empty():
+        rows = _apply_overrides(
+            rows,
+            overrides=overrides,
+            parsed_kinds={r.source_path: r.kind for r in rows},
+            get_movie=get_movie,
+            get_tv=get_tv,
+            get_season=get_season,
+        )
 
     # Group rows by group_key (TV episodes from the same show stack;
     # movies are their own group). Group-level anchor is "any row in
@@ -267,6 +292,90 @@ def _report_one_row(
         queries_tried=queries_run,
         flags=flags,
     )
+
+
+def _apply_overrides(
+    rows: list[RowReport],
+    *,
+    overrides: OverrideSet,
+    parsed_kinds: dict[Path, str],
+    get_movie: GetMovieFn | None,
+    get_tv: GetTVFn | None,
+    get_season: GetSeasonFn | None,
+) -> list[RowReport]:
+    """Replace ``top_candidate`` on every row matched by ``overrides``.
+
+    Group overrides apply to every row in the matching group. Row
+    overrides win over group overrides on the same row. Each
+    overridden row gets the ``anchor-override`` flag and ``no-anchor``
+    / ``low-confidence`` flags are cleared (the user vouched for this
+    anchor).
+
+    Overrides that reference rows / groups not present in the report
+    are silently ignored — they may match a different source tree the
+    user intends to reuse the same JSON file against.
+    """
+    # Cache resolved overrides by anchor key so we don't refetch when
+    # multiple rows share the same group.
+    resolved_cache: dict[tuple[str, str], Candidate] = {}
+
+    def _resolve(ref, parsed_kind: str) -> Candidate | None:
+        if get_movie is None or get_tv is None:
+            return None
+        cache_key = (ref.kind, ref.id)
+        if cache_key in resolved_cache:
+            return resolved_cache[cache_key]
+        try:
+            cand = resolve_anchor_to_candidate(
+                ref,
+                parsed_kind=parsed_kind,
+                get_movie=get_movie,
+                get_tv=get_tv,
+                get_season=get_season,
+            )
+        except Exception:
+            return None
+        resolved_cache[cache_key] = cand
+        return cand
+
+    new_rows: list[RowReport] = []
+    for row in rows:
+        ref = overrides.rows.get(str(row.source_path))
+        if ref is None:
+            ref = overrides.groups.get(row.group_key)
+        if ref is None:
+            new_rows.append(row)
+            continue
+        cand = _resolve(ref, parsed_kinds.get(row.source_path, row.kind))
+        if cand is None:
+            new_rows.append(row)
+            continue
+        # Strip resolver-confidence flags; the user vouched for this
+        # anchor so "low-confidence" / "no-anchor" no longer apply.
+        new_flags = [
+            f
+            for f in row.flags
+            if f
+            not in {"no-anchor", "low-confidence", "ambiguous", "empty-search", "year-mismatch"}
+        ]
+        new_flags.append("anchor-override")
+        new_rows.append(
+            RowReport(
+                source_path=row.source_path,
+                raw_filename=row.raw_filename,
+                kind=row.kind,
+                parsed_title=row.parsed_title,
+                parsed_year=row.parsed_year,
+                parsed_season=row.parsed_season,
+                parsed_episode=row.parsed_episode,
+                group_key=row.group_key,
+                top_candidate=cand,
+                alternatives=row.alternatives,
+                queries_tried=row.queries_tried,
+                flags=new_flags,
+            )
+        )
+    return new_rows
 
 
 def _group_key(parsed: ParseResult, input_root: Path) -> str:

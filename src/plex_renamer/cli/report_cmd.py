@@ -36,6 +36,13 @@ import sys
 from pathlib import Path
 
 from plex_renamer.config.settings import Settings
+from plex_renamer.diagnostics.overrides import (
+    OverrideParseError,
+    OverrideSet,
+    load_override_file,
+    merge_overrides,
+    parse_override_flags,
+)
 from plex_renamer.diagnostics.report import (
     ReportArtifact,
     RowReport,
@@ -92,6 +99,29 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Suppress per-row progress to stderr while running.",
     )
+    p.add_argument(
+        "--anchor",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Force-anchor a row or group. KEY is 'tv|<show_name>', "
+            "'movie|<title>|<year>', or 'row:<absolute_path>'. VALUE is a "
+            "TMDB / IMDb anchor (tmdb-12345, tmdb-tv-12345/season/3, "
+            "imdb-tt0123456, or a themoviedb.org URL). Repeatable."
+        ),
+    )
+    p.add_argument(
+        "--anchors",
+        default=None,
+        metavar="FILE",
+        help=(
+            "JSON file mapping group / row keys to anchor strings. "
+            'Shape: {"groups": {"tv|...": "tmdb-..."}, "rows": '
+            '{"/abs/path": "tmdb-..."}}. Merged with --anchor flags; '
+            "--anchor flags take precedence on conflicting keys."
+        ),
+    )
     p.set_defaults(_handler=run_report)
 
 
@@ -118,6 +148,10 @@ def run_report(args: argparse.Namespace) -> int:
     cache = TMDBCache(client)
     resolver = IMDbFallbackResolver(tmdb=cache, omdb_api_key=settings.omdb_api_key)
 
+    overrides = _collect_overrides(args)
+    if overrides is None:
+        return 2
+
     progress = None if args.quiet else _progress_to_stderr
 
     artifact = build_report(
@@ -126,6 +160,10 @@ def run_report(args: argparse.Namespace) -> int:
         search_tv=resolver.search_tv_pooled,
         top_n=int(args.top_n),
         progress=progress,
+        overrides=overrides,
+        get_movie=cache.get_movie,
+        get_tv=cache.get_tv,
+        get_season=cache.get_season,
     )
 
     # Always dump the ignored-paths list to a tmp file so the user
@@ -159,6 +197,31 @@ def run_report(args: argparse.Namespace) -> int:
 
     _print_human(artifact, show=args.show, hide_alternatives=args.no_alternatives)
     return 0
+
+
+def _collect_overrides(args: argparse.Namespace) -> OverrideSet | None:
+    """Combine ``--anchors`` (file) + ``--anchor`` (repeated flag).
+
+    File loads first; CLI flags merge on top so per-invocation
+    overrides win on conflicting keys. Returns None on parse failure
+    (and prints to stderr) so the caller can exit 2.
+    """
+    sets: list[OverrideSet] = []
+    if args.anchors:
+        try:
+            sets.append(load_override_file(Path(args.anchors)))
+        except (OSError, OverrideParseError) as exc:
+            print(f"plex-renamer: --anchors load failed: {exc}", file=sys.stderr)
+            return None
+    if args.anchor:
+        try:
+            sets.append(parse_override_flags(list(args.anchor)))
+        except OverrideParseError as exc:
+            print(f"plex-renamer: --anchor parse failed: {exc}", file=sys.stderr)
+            return None
+    if not sets:
+        return OverrideSet(groups={}, rows={})
+    return merge_overrides(*sets)
 
 
 def _ignored_dump_path(source: Path) -> Path:
