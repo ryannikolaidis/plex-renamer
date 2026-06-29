@@ -1,11 +1,11 @@
-"""``plex-renamer review`` — interactive group-by-group anchor review.
+"""Line-based REPL fallback for ``plex-renamer <source> --simple``.
 
-CLI parity with the GUI's review-and-reanchor flow. Walks groups
-serially, prints the current TMDB match + confidence + alternatives,
-and accepts inline actions for picking a different anchor without
-ever touching the filesystem.
+The default invocation (``plex-renamer <source>``) launches the
+textual TUI in :mod:`plex_renamer.cli.review_tui`. This module is the
+no-deps alternative: a group-by-group prompt that lets you redirect
+TMDB anchors without ever touching the filesystem.
 
-UX (line-based; no extra deps):
+UX:
 
 ::
 
@@ -60,54 +60,7 @@ from plex_renamer.tmdb.fallback import IMDbFallbackResolver
 from plex_renamer.tmdb.models import Candidate
 
 
-def add_subparser(sub: argparse._SubParsersAction) -> None:
-    """Wire the ``review`` subcommand into the top-level CLI parser."""
-    p = sub.add_parser(
-        "review",
-        help="Interactively review and reassign TMDB anchors group-by-group. Read-only.",
-    )
-    p.add_argument("--source", required=True, help="Source directory or file to walk.")
-    p.add_argument(
-        "--tmdb-key",
-        default=None,
-        help="TMDB v3 API key. Falls back to settings/.env if omitted.",
-    )
-    p.add_argument(
-        "--top-n",
-        type=int,
-        default=5,
-        help="Number of alternatives to show per group (default 5).",
-    )
-    p.add_argument(
-        "--show",
-        choices=["all", "low-conf", "unanchored"],
-        default="low-conf",
-        help=(
-            "Which groups to walk. Default 'low-conf' — only groups whose top "
-            "candidate is below 0.85 confidence OR unanchored. Use 'all' to "
-            "review every group."
-        ),
-    )
-    p.add_argument(
-        "--save",
-        default=None,
-        help=(
-            "Where to write the resulting anchors JSON. Defaults to "
-            "/tmp/plex-renamer-review-anchors-<source-name>.json."
-        ),
-    )
-    p.add_argument(
-        "--load",
-        default=None,
-        help=(
-            "Load existing anchors JSON before the review starts. "
-            "Pre-populates decisions so you can resume an earlier session."
-        ),
-    )
-    p.set_defaults(_handler=run_review)
-
-
-def run_review(args: argparse.Namespace) -> int:
+def run_review_simple(args: argparse.Namespace) -> int:
     source = Path(args.source).resolve()
     if not source.exists():
         print(f"plex-renamer: source not found: {source}", file=sys.stderr)
@@ -177,8 +130,7 @@ def run_review(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         print(
-            "  Replay via: plex-renamer report --source <tree> --anchors "
-            f"{state.save_path}",
+            f"  Replay via: plex-renamer report --source <tree> --anchors {state.save_path}",
             file=sys.stderr,
         )
     else:
@@ -208,10 +160,7 @@ def _filter_groups(artifact: ReportArtifact, show: str) -> list[GroupReport]:
         if not g.anchored:
             out.append(g)
             continue
-        if any(
-            r.top_candidate is not None and r.top_candidate.confidence < 0.85
-            for r in g.rows
-        ):
+        if any(r.top_candidate is not None and r.top_candidate.confidence < 0.85 for r in g.rows):
             out.append(g)
     return out
 
@@ -228,9 +177,7 @@ def _walk_groups(
         group = groups[idx]
         _print_group_summary(idx, len(groups), group, state)
         action = _prompt("> ")
-        result = _handle_action(
-            action, group=group, state=state, cache=cache, resolver=resolver
-        )
+        result = _handle_action(action, group=group, state=state, cache=cache, resolver=resolver)
         if result == "next":
             idx += 1
         elif result == "back":
@@ -246,9 +193,7 @@ def _walk_groups(
     return 0
 
 
-def _print_group_summary(
-    idx: int, total: int, group: GroupReport, state: _ReviewState
-) -> None:
+def _print_group_summary(idx: int, total: int, group: GroupReport, state: _ReviewState) -> None:
     print()
     print(
         f"[GROUP {idx + 1} / {total}]  [{group.kind.upper():5}]  "
@@ -478,13 +423,11 @@ def _persist_state(state: _ReviewState) -> None:
 
 
 def _progress_to_stderr(idx: int, total: int, source_path: Path) -> None:
-    sys.stderr.write(
-        f"\rresolving {idx + 1}/{total}: {source_path.name[:60]:<60}"
-    )
+    sys.stderr.write(f"\rresolving {idx + 1}/{total}: {source_path.name[:60]:<60}")
     sys.stderr.flush()
     if idx + 1 == total:
         sys.stderr.write("\n")
         sys.stderr.flush()
 
 
-__all__ = ["add_subparser", "run_review"]
+__all__ = ["run_review_simple"]

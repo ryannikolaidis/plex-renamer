@@ -1,14 +1,16 @@
 """Command-line entry point.
 
-Three subcommands:
+Two ways to run:
 
-* ``plan``: walk a source tree, resolve via TMDB, emit a JSON plan.
-* ``apply``: execute a plan from JSON, write a journal.
-* ``undo``: read a journal and invert the operations.
+* ``plex-renamer <source>`` — bare invocation launches the interactive
+  TUI against ``<source>``. The TUI walks every file, lets you redirect
+  TMDB anchors per row or per show group, and (with ``--movies`` /
+  ``--tv``) applies the resulting plan in the same session.
+* ``plex-renamer <subcommand>`` — scripted entry points for automation:
+  ``plan`` (build a plan JSON), ``apply`` (consume one), ``undo``,
+  ``report`` (read-only diagnostic).
 
-All three are wired through :func:`app`, which parses argv and
-dispatches. The function returns an exit code so the same body can be
-called from tests or from the script entry point.
+Use ``--simple`` for a line-based REPL instead of the TUI.
 """
 
 from __future__ import annotations
@@ -20,7 +22,6 @@ from plex_renamer import __version__
 from plex_renamer.cli.apply_cmd import run_apply
 from plex_renamer.cli.plan_cmd import run_plan
 from plex_renamer.cli.report_cmd import add_subparser as add_report_subparser
-from plex_renamer.cli.review_cmd import add_subparser as add_review_subparser
 from plex_renamer.cli.undo_cmd import run_undo
 
 _UNKNOWN_ARG_EXIT = 2
@@ -29,10 +30,72 @@ _UNKNOWN_ARG_EXIT = 2
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="plex-renamer",
-        description="Rename movies and TV files into Plex's expected naming format.",
+        description=(
+            "Rename movies and TV files into Plex's expected naming format. "
+            "Run `plex-renamer <source>` to launch the interactive TUI, or use "
+            "one of the subcommands below for scripted runs."
+        ),
         add_help=True,
     )
     parser.add_argument("--version", "-V", action="store_true", help="Print version and exit.")
+
+    # --- top-level TUI args (no subcommand) -----------------------------
+    # ``source`` is a flag rather than a positional because argparse's
+    # subparser slot collides with optional positionals (a bare path
+    # gets rejected as an invalid subcommand choice). The app() shim
+    # pre-parses ``plex-renamer <path>`` and rewrites it to
+    # ``--source <path>`` before argparse runs.
+    parser.add_argument(
+        "--source",
+        default=None,
+        help="Source directory or file. Launches the interactive TUI.",
+    )
+    parser.add_argument(
+        "--tmdb-key",
+        default=None,
+        help="TMDB v3 API key. Falls back to settings/.env if omitted.",
+    )
+    parser.add_argument(
+        "--movies",
+        default=None,
+        help="Movies library root. Required to apply; falls back to settings.",
+    )
+    parser.add_argument(
+        "--tv",
+        default=None,
+        help="TV library root. Required to apply; falls back to settings.",
+    )
+    parser.add_argument(
+        "--top-n",
+        type=int,
+        default=5,
+        help="Number of alternatives shown per row drill-in (default 5).",
+    )
+    parser.add_argument(
+        "--show",
+        choices=["all", "low-conf", "unanchored"],
+        default="low-conf",
+        help=("Simple-mode only — which groups to walk. The TUI uses [F] to cycle filters."),
+    )
+    parser.add_argument(
+        "--save",
+        default=None,
+        help=(
+            "Where to persist accumulated anchor overrides. Defaults to "
+            "/tmp/plex-renamer-review-anchors-<source-name>.json."
+        ),
+    )
+    parser.add_argument(
+        "--load",
+        default=None,
+        help="Pre-load an anchors JSON to resume an earlier session.",
+    )
+    parser.add_argument(
+        "--simple",
+        action="store_true",
+        help="Use the line-based REPL instead of the default TUI.",
+    )
+
     sub = parser.add_subparsers(dest="command")
 
     # --- plan ------------------------------------------------------------
@@ -83,14 +146,32 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- report (read-only diagnostic) ----------------------------------
     add_report_subparser(sub)
 
-    # --- review (interactive group-by-group anchor reassignment) -------
-    add_review_subparser(sub)
-
     return parser
 
 
+_SUBCOMMANDS = frozenset({"plan", "apply", "undo", "report"})
+
+
+def _rewrite_bare_source(args: list[str]) -> list[str]:
+    """``plex-renamer /path/to/x`` -> ``plex-renamer --source /path/to/x``.
+
+    The shim runs only when the first non-flag arg is neither a known
+    subcommand name nor a flag — i.e. the user typed a bare source
+    path. Subcommand invocations and explicit ``--source`` flag usage
+    are passed through unchanged.
+    """
+    if not args:
+        return args
+    first = args[0]
+    if first.startswith("-"):
+        return args
+    if first in _SUBCOMMANDS:
+        return args
+    return ["--source", first, *args[1:]]
+
+
 def app(argv: list[str] | None = None) -> int:
-    """Parse ``argv`` and dispatch to the matching subcommand handler."""
+    """Parse ``argv`` and dispatch to the matching handler."""
     args = sys.argv[1:] if argv is None else argv
 
     # Direct --version short-circuit so tests don't need a subcommand.
@@ -98,14 +179,11 @@ def app(argv: list[str] | None = None) -> int:
         print(f"plex-renamer {__version__}")
         return 0
 
+    args = _rewrite_bare_source(args)
     parser = _build_parser()
     try:
         parsed = parser.parse_args(args)
     except SystemExit as exc:
-        # argparse raises SystemExit(0) when the user asked for --help; in
-        # that case the help text has already been printed and we should
-        # exit cleanly without appending an "unknown argument" diagnostic.
-        # SystemExit(2) means a real parse error; format the message.
         code = exc.code if isinstance(exc.code, int) else _UNKNOWN_ARG_EXIT
         if code == 0:
             return 0
@@ -126,17 +204,25 @@ def app(argv: list[str] | None = None) -> int:
         return run_apply(parsed)
     if parsed.command == "undo":
         return run_undo(parsed)
-    # The ``report`` subcommand registers its own handler on the
-    # namespace via add_subparser → set_defaults(_handler=...).
+    # ``report`` registers its own handler via set_defaults(_handler=...).
     handler = getattr(parsed, "_handler", None)
     if callable(handler):
         rc = handler(parsed)
-        if isinstance(rc, int):
-            return rc
-        return 0
+        return rc if isinstance(rc, int) else 0
+
+    # No subcommand. If a source path was given, launch the TUI (or the
+    # line-based REPL when --simple is set). Without one, print help.
+    if parsed.source:
+        if parsed.simple:
+            from plex_renamer.cli.review_cmd import run_review_simple
+
+            return run_review_simple(parsed)
+        from plex_renamer.cli.review_tui import run_review_tui
+
+        return run_review_tui(parsed)
 
     if not args:
-        print("plex-renamer: pass --help to see available subcommands.")
+        print("plex-renamer: pass a source path or --help to see subcommands.")
         return 0
 
     print(

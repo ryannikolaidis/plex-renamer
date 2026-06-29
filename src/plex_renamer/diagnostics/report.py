@@ -307,7 +307,7 @@ def _report_one_row(
         parsed_year=parsed.year,
         parsed_season=parsed.season,
         parsed_episode=parsed.episode,
-            parsed_episode_title=parsed.episode_title,
+        parsed_episode_title=parsed.episode_title,
         group_key=group_key,
         top_candidate=top,
         alternatives=list(alts),
@@ -344,11 +344,7 @@ def _attach_episode_matches(
     """
     new_rows: list[RowReport] = []
     for row in rows:
-        if (
-            row.kind != "tv"
-            or row.top_candidate is None
-            or row.top_candidate.anchor_kind != "tmdb"
-        ):
+        if row.kind != "tv" or row.top_candidate is None or row.top_candidate.anchor_kind != "tmdb":
             new_rows.append(row)
             continue
         parsed = parsed_lookup.get(row.source_path)
@@ -388,7 +384,11 @@ def _attach_episode_matches(
                 new_flags.append("episode-renumbered")
             # Title mismatch: parsed and TMDB titles don't loosely
             # agree (rapidfuzz token_set_ratio < 60).
-            if parsed.episode_title and ep.title and _loose_title_score(parsed.episode_title, ep.title) < 60:
+            if (
+                parsed.episode_title
+                and ep.title
+                and _loose_title_score(parsed.episode_title, ep.title) < 60
+            ):
                 new_flags.append("episode-title-mismatch")
         new_rows.append(
             RowReport(
