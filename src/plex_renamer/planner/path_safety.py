@@ -30,6 +30,12 @@ PATH_LENGTH_WARN_THRESHOLD = 240
 # — components don't contain ``/`` by construction.
 _WINDOWS_FORBIDDEN_RE = re.compile(r'[<>:"\\|?*]')
 
+# Colon-with-surrounding-whitespace, rendered as ` - ` per the convention
+# Plex / Sonarr / Radarr use for titles with subtitles. We apply this BEFORE
+# the catch-all forbidden-char sweep so ``Show: Subtitle`` becomes
+# ``Show - Subtitle`` rather than the uglier ``Show_ Subtitle``.
+_COLON_SEPARATOR_RE = re.compile(r"\s*:\s*")
+
 # Reserved device names. Compared case-insensitively against the stem (the
 # part before the first dot). ``COM1.txt`` is reserved; ``CONsole.txt`` is
 # fine.
@@ -111,6 +117,9 @@ def sanitize_component(name: str) -> str:
     if not name:
         return "_"
     nfc = unicodedata.normalize("NFC", name)
+    # Render colon-as-subtitle-separator first; the catch-all sweep
+    # below would otherwise turn ``:`` into ``_``.
+    nfc = _COLON_SEPARATOR_RE.sub(" - ", nfc).strip()
     stripped = _WINDOWS_FORBIDDEN_RE.sub("_", nfc)
     # Reserved device name check operates on the stem (before first dot).
     stem, _, suffix = stripped.partition(".")
