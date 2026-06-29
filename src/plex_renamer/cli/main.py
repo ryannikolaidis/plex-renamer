@@ -20,6 +20,7 @@ from plex_renamer import __version__
 from plex_renamer.cli.apply_cmd import run_apply
 from plex_renamer.cli.plan_cmd import run_plan
 from plex_renamer.cli.report_cmd import add_subparser as add_report_subparser
+from plex_renamer.cli.review_cmd import add_subparser as add_review_subparser
 from plex_renamer.cli.undo_cmd import run_undo
 
 _UNKNOWN_ARG_EXIT = 2
@@ -81,6 +82,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # --- report (read-only diagnostic) ----------------------------------
     add_report_subparser(sub)
+
+    # --- review (interactive group-by-group anchor reassignment) -------
+    add_review_subparser(sub)
 
     return parser
 
