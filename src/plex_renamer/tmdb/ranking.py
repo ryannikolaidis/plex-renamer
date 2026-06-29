@@ -142,4 +142,30 @@ def cleaned_query_variants(query: str) -> list[str]:
     return out
 
 
-__all__ = ["cleaned_query_variants", "rank_candidates"]
+def aggressive_query_variants(query: str) -> list[str]:
+    """Last-resort variants when every :func:`cleaned_query_variants` form misses.
+
+    Progressively strips trailing words from the query:
+    ``Detective Dee Demon Chonchon`` → ``Detective Dee Demon`` →
+    ``Detective Dee``. Catches franchise subtitles and over-descriptive
+    parser titles that TMDB doesn't match verbatim. Always keeps at
+    least two words and strips at most three (so we don't degenerate
+    into a one-word query that returns a wall of unrelated hits).
+
+    Returned list does NOT include the original query. The resolver
+    calls this only when the cleaned-variants pool returned zero
+    candidates — using it as a concurrent pool would dilute correct
+    long-title matches like ``El Día De La Bestia`` → ``The Day of
+    the Beast`` (a title-shape that loses information when shortened).
+    """
+    out: list[str] = []
+    words = query.split()
+    max_strip = min(3, max(0, len(words) - 2))
+    for n in range(1, max_strip + 1):
+        shortened = " ".join(words[:-n]).strip()
+        if shortened and shortened not in out:
+            out.append(shortened)
+    return out
+
+
+__all__ = ["aggressive_query_variants", "cleaned_query_variants", "rank_candidates"]

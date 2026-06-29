@@ -48,7 +48,11 @@ from rapidfuzz import fuzz
 
 from plex_renamer.tmdb.errors import TMDBError
 from plex_renamer.tmdb.models import Candidate, MovieResult, TVResult
-from plex_renamer.tmdb.ranking import cleaned_query_variants, rank_candidates
+from plex_renamer.tmdb.ranking import (
+    aggressive_query_variants,
+    cleaned_query_variants,
+    rank_candidates,
+)
 
 DEFAULT_OMDB_BASE_URL = "https://www.omdbapi.com/"
 DEFAULT_MIN_TMDB_CONFIDENCE = 0.6
@@ -120,22 +124,48 @@ class IMDbFallbackResolver:
     def search_movie_pooled(self, title: str, year: int | None) -> list[Candidate]:
         """Search every cleaned-query variant; return ranked, deduped candidates.
 
-        Without this, a parser-produced title like ``Spaceballs_1`` would
-        search TMDB exactly once for ``Spaceballs_1`` and miss the real
-        ``Spaceballs`` because the loose-suffix query happens to hit a
-        different record. Pooling across variants merges results from
-        every cleaned form so the rank step sees them all.
+        Two-tier strategy:
 
-        The returned list is sorted by descending relevance (the
-        resolver's blended title+year score, then the public ranker's
-        prefix/word boost) and deduped by ``anchor_id``. Empty inputs
-        return an empty list.
+        1. **Safe pool**: search across every form returned by
+           :func:`cleaned_query_variants` (the original query plus
+           trivial cleanings — trailing ``_N`` markers, parenthesized
+           suffixes, leading ``The``). All results are pooled and
+           re-ranked. This is what fixes the ``Spaceballs_1`` →
+           ``Spaceballs`` class of bug while keeping
+           ``El Día De La Bestia`` → ``The Day of the Beast`` intact.
+
+        2. **Aggressive fallback**: if the safe pool came up empty,
+           fall back to :func:`aggressive_query_variants` — progressive
+           trailing-word strips like ``Detective Dee Demon Chonchon``
+           → ``Detective Dee Demon`` → ``Detective Dee``. Only runs as
+           a fallback because shortened queries can mask correct long
+           matches (``El Día De La Bestia`` → ``El Día`` would crowd
+           out the real Day of the Beast).
+
+        Empty input returns an empty list.
         """
         if not title:
             return []
+        candidates = self._pooled_movie(title, year, cleaned_query_variants(title))
+        if not candidates:
+            candidates = self._pooled_movie(title, year, aggressive_query_variants(title))
+        return candidates
+
+    def search_tv_pooled(self, title: str, year: int | None) -> list[Candidate]:
+        """TV equivalent of :meth:`search_movie_pooled` (same two-tier strategy)."""
+        if not title:
+            return []
+        candidates = self._pooled_tv(title, year, cleaned_query_variants(title))
+        if not candidates:
+            candidates = self._pooled_tv(title, year, aggressive_query_variants(title))
+        return candidates
+
+    def _pooled_movie(
+        self, original_title: str, year: int | None, variants: list[str]
+    ) -> list[Candidate]:
         pooled: list[MovieResult] = []
         seen: set[int] = set()
-        for variant in cleaned_query_variants(title):
+        for variant in variants:
             for r in self._tmdb.search_movie(variant, year):
                 if r.tmdb_id in seen:
                     continue
@@ -144,22 +174,19 @@ class IMDbFallbackResolver:
         if not pooled:
             return []
         scored = [
-            (r, _blend(_title_score(title, r.title), _year_score(year, r.year))) for r in pooled
+            (r, _blend(_title_score(original_title, r.title), _year_score(year, r.year)))
+            for r in pooled
         ]
         scored.sort(key=lambda pair: pair[1], reverse=True)
         candidates = [_movie_to_candidate(r, conf) for r, conf in scored]
-        # Apply the public ranker on top so exact-title matches outrank
-        # blended-equal candidates (e.g. ``Spaceballs`` over
-        # ``Spaceballs: The New One`` when both have year confidence).
-        return rank_candidates(title, candidates)
+        return rank_candidates(original_title, candidates)
 
-    def search_tv_pooled(self, title: str, year: int | None) -> list[Candidate]:
-        """TV equivalent of :meth:`search_movie_pooled`."""
-        if not title:
-            return []
+    def _pooled_tv(
+        self, original_title: str, year: int | None, variants: list[str]
+    ) -> list[Candidate]:
         pooled: list[TVResult] = []
         seen: set[int] = set()
-        for variant in cleaned_query_variants(title):
+        for variant in variants:
             for r in self._tmdb.search_tv(variant, year):
                 if r.tmdb_id in seen:
                     continue
@@ -168,11 +195,12 @@ class IMDbFallbackResolver:
         if not pooled:
             return []
         scored = [
-            (r, _blend(_title_score(title, r.title), _year_score(year, r.year))) for r in pooled
+            (r, _blend(_title_score(original_title, r.title), _year_score(year, r.year)))
+            for r in pooled
         ]
         scored.sort(key=lambda pair: pair[1], reverse=True)
         candidates = [_tv_to_candidate(r, conf) for r, conf in scored]
-        return rank_candidates(title, candidates)
+        return rank_candidates(original_title, candidates)
 
     # ----- Internals --------------------------------------------------------
 
