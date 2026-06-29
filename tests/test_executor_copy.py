@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from plex_renamer.executor.copy import apply_plan
 from plex_renamer.executor.verify import sha256_of, verify_hash, verify_size
 from plex_renamer.planner.models import RenameOp, RenamePlan
@@ -69,6 +71,60 @@ def test_apply_plan_copies_and_verifies(tmp_path: Path) -> None:
     assert plan.ops[0].target.read_bytes() == b"matrix-bytes"
     # Source remains.
     assert plan.ops[0].source.exists()
+
+
+def test_apply_plan_renames_when_cleanup_and_same_filesystem(safe_tmp_path: Path) -> None:
+    """With ``cleanup=True`` and source/target on one FS, the op_rename
+    fast-path runs: source is gone (no longer at the original path),
+    target exists, and zero bytes were copied (the inode moved).
+    """
+    plan = _plan_with_op(safe_tmp_path, payload=b"rename-fast-path")
+    src = plan.ops[0].source
+    target = plan.ops[0].target
+    src_inode = src.stat().st_ino
+
+    result = apply_plan(plan, journal_dir=safe_tmp_path / "journals", cleanup=True)
+    assert result.succeeded == 1
+    assert result.failed == 0
+    assert result.cleanup_ran is True
+    # Source path is now empty; target carries the same inode.
+    assert not src.exists()
+    assert target.exists()
+    assert target.stat().st_ino == src_inode
+    assert target.read_bytes() == b"rename-fast-path"
+
+
+def test_apply_plan_falls_back_to_copy_on_exdev(
+    safe_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When ``os.rename`` raises EXDEV (cross-filesystem), the executor
+    falls back to ``shutil.copy2`` + verify + (eventual) cleanup-delete.
+    Simulated by monkeypatching ``os.rename`` to raise EXDEV.
+    """
+    import errno
+    import os as os_mod
+
+    from plex_renamer.executor import copy as copy_module
+
+    plan = _plan_with_op(safe_tmp_path, payload=b"cross-fs-fallback")
+
+    real_rename = os_mod.rename
+
+    def fake_rename(_src: str, _dst: str) -> None:
+        raise OSError(errno.EXDEV, "simulated cross-device")
+
+    monkeypatch.setattr(copy_module.os, "rename", fake_rename)
+
+    result = apply_plan(plan, journal_dir=safe_tmp_path / "journals", cleanup=True)
+    assert result.succeeded == 1
+    assert result.failed == 0
+    assert result.cleanup_ran is True
+    # Source removed by cleanup pass, target carries the payload.
+    assert not plan.ops[0].source.exists()
+    assert plan.ops[0].target.read_bytes() == b"cross-fs-fallback"
+
+    # Sanity: with the patch off, real rename works again.
+    _ = real_rename
 
 
 def test_apply_plan_with_hash_verification(tmp_path: Path) -> None:

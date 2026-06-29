@@ -248,10 +248,10 @@ def test_sidecar_failure_does_not_corrupt_primary_status(
     original_do_copy = copy_module._do_copy
     fail_target = plan.ops[0].sidecars[1][1]
 
-    def fail_on_second_sidecar(source: Path, target: Path) -> None:
+    def fail_on_second_sidecar(source: Path, target: Path, *, allow_rename: bool) -> bool:
         if target == fail_target:
             raise OSError("simulated sidecar copy failure")
-        original_do_copy(source, target)
+        return original_do_copy(source, target, allow_rename=allow_rename)
 
     monkeypatch.setattr(copy_module, "_do_copy", fail_on_second_sidecar)
 
@@ -313,10 +313,10 @@ def test_undo_recovers_primary_when_sidecar_failed(
     original_do_copy = copy_module._do_copy
     fail_target = plan.ops[0].sidecars[1][1]
 
-    def fail_on_second_sidecar(source: Path, target: Path) -> None:
+    def fail_on_second_sidecar(source: Path, target: Path, *, allow_rename: bool) -> bool:
         if target == fail_target:
             raise OSError("simulated sidecar copy failure")
-        original_do_copy(source, target)
+        return original_do_copy(source, target, allow_rename=allow_rename)
 
     monkeypatch.setattr(copy_module, "_do_copy", fail_on_second_sidecar)
 
@@ -362,10 +362,10 @@ def test_primary_copy_failure_still_fails_correctly(
     original_do_copy = copy_module._do_copy
     primary_target = plan.ops[0].target
 
-    def fail_on_primary(source: Path, target: Path) -> None:
+    def fail_on_primary(source: Path, target: Path, *, allow_rename: bool) -> bool:
         if target == primary_target:
             raise OSError("simulated primary copy failure")
-        original_do_copy(source, target)
+        return original_do_copy(source, target, allow_rename=allow_rename)
 
     monkeypatch.setattr(copy_module, "_do_copy", fail_on_primary)
 

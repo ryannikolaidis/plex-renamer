@@ -43,12 +43,28 @@ from plex_renamer.planner.path_safety import (
 )
 
 
-def cleanup_sources(sources: list[Path], input_root: Path) -> bool:
-    """Delete every source file plus now-empty descendants.
+def cleanup_sources(
+    sources: list[Path],
+    input_root: Path,
+    *,
+    prune_empty_parents: bool = True,
+) -> bool:
+    """Delete every source file plus optionally now-empty descendants.
 
-    Returns True if cleanup succeeded; False or raises on guard failure.
-    Raises :class:`CleanupRefused` when ANY guard fires; no deletion
-    occurs in that case.
+    With ``prune_empty_parents=True`` (default), walks up from each
+    source's parent removing newly-empty directories until the chain
+    stops or hits ``input_root``. This is what end-of-batch cleanup
+    wants — leaves no dangling skeleton.
+
+    With ``prune_empty_parents=False``, only the source files themselves
+    are unlinked (or skipped when already absent because a rename moved
+    them). Useful when the caller is converting one file at a time and
+    the empty-parent walk on a slow network share is a significant
+    fraction of per-op wall time. The skipped pruning can be performed
+    later by re-invoking cleanup with the flag back on.
+
+    Returns True if cleanup succeeded; raises :class:`CleanupRefused`
+    on guard failure.
     """
     if not sources:
         return False
@@ -75,6 +91,9 @@ def cleanup_sources(sources: list[Path], input_root: Path) -> bool:
     for path in resolved_sources:
         if path.exists():
             path.unlink()
+
+    if not prune_empty_parents:
+        return True
 
     # Second pass: walk up parents, deleting empties; never cross
     # ``input_root_abs`` or violate guards.

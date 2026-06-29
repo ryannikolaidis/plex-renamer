@@ -1,11 +1,16 @@
-"""Plan application: copy every op with verification + journal.
+"""Plan application: move/copy every op with verification + journal.
 
 The flow per op is::
 
     1. journal.add_pending(op_index, source, target)
     2. mkdir parents
-    3. shutil.copy2(source, target)
-    4. verify_size + optional verify_hash
+    3. _do_copy(source, target, allow_rename=cleanup)
+       - When ``cleanup=True`` AND source/target share a filesystem, this
+         is ``os.rename`` (atomic, metadata-only, no bytes copied).
+       - Otherwise (or when ``cleanup=False``), this is ``shutil.copy2``.
+    4. If copied: verify_size + optional verify_hash.
+       If renamed: skip verification — the inode is identical and the
+       source no longer exists.
     5. journal.mark_verified(op_index, bytes, sha)
        OR journal.mark_failed(op_index, error)
     6. for each sidecar pair, repeat 2-5
@@ -31,6 +36,8 @@ Two public entry points:
 
 from __future__ import annotations
 
+import errno
+import os
 import shutil
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -65,6 +72,7 @@ def apply_plan_iter(
     journal_dir: Path | None = None,
     cleanup: bool = False,
     verify_hash: bool = False,
+    prune_empty_parents: bool = True,
 ) -> Iterator[dict[str, Any]]:
     """Generator variant of :func:`apply_plan` that yields progress.
 
@@ -111,7 +119,11 @@ def apply_plan_iter(
             "total_bytes": source_size,
         }
         try:
-            _copy_one(op, idx, journal, verify_hash=verify_hash)
+            # ``allow_rename`` mirrors ``cleanup``: the rename fast-path
+            # only runs when the caller has opted into the source-gets-
+            # removed semantics. With ``cleanup=False`` we must preserve
+            # the source so we always copy.
+            _copy_one(op, idx, journal, verify_hash=verify_hash, allow_rename=cleanup)
             succeeded += 1
             try:
                 bytes_copied = op.target.stat().st_size
@@ -155,7 +167,11 @@ def apply_plan_iter(
     cleanup_did_run = False
     if cleanup and failed == 0 and journal.all_verified:
         sources = [Path(e.source) for e in journal.verified_entries]
-        cleanup_did_run = cleanup_sources(sources, input_root=plan.input_root)
+        cleanup_did_run = cleanup_sources(
+            sources,
+            input_root=plan.input_root,
+            prune_empty_parents=prune_empty_parents,
+        )
         journal.mark_cleanup(cleanup_did_run)
 
     yield {
@@ -176,6 +192,7 @@ def apply_plan(
     journal_dir: Path | None = None,
     cleanup: bool = False,
     verify_hash: bool = False,
+    prune_empty_parents: bool = True,
 ) -> ApplyResult:
     """Apply ``plan``'s ops. Writes a journal, verifies, optionally cleans up.
 
@@ -197,6 +214,7 @@ def apply_plan(
         journal_dir=journal_dir,
         cleanup=cleanup,
         verify_hash=verify_hash,
+        prune_empty_parents=prune_empty_parents,
     ):
         if event.get("event") == "done":
             return event["result"]
@@ -216,18 +234,26 @@ class _SidecarCopyError(Exception):
         self.sidecar_op_index = sidecar_op_index
 
 
-def _copy_one(op: RenameOp, op_index: int, journal: Journal, *, verify_hash: bool) -> None:
+def _copy_one(
+    op: RenameOp,
+    op_index: int,
+    journal: Journal,
+    *,
+    verify_hash: bool,
+    allow_rename: bool,
+) -> None:
     # Primary file. Exceptions here propagate to the outer ``except`` in
     # ``apply_plan``, which marks the primary entry (op_index, None) failed.
     journal.add_pending(op_index, op.source, op.target)
-    _do_copy(op.source, op.target)
-    if not verify_size(op.source, op.target):
-        raise RuntimeError(f"size mismatch on {op.target}")
+    renamed = _do_copy(op.source, op.target, allow_rename=allow_rename)
     sha: str | None = None
-    if verify_hash:
-        matched, sha = verify_hash_with_digest(op.source, op.target)
-        if not matched:
-            raise RuntimeError(f"sha256 mismatch on {op.target}")
+    if not renamed:
+        if not verify_size(op.source, op.target):
+            raise RuntimeError(f"size mismatch on {op.target}")
+        if verify_hash:
+            matched, sha = verify_hash_with_digest(op.source, op.target)
+            if not matched:
+                raise RuntimeError(f"sha256 mismatch on {op.target}")
     journal.mark_verified(op_index, bytes_copied=op.target.stat().st_size, sha256=sha)
 
     # Sidecars: separate journal entries keyed by (sidecar_pos, parent_op_index).
@@ -238,14 +264,15 @@ def _copy_one(op: RenameOp, op_index: int, journal: Journal, *, verify_hash: boo
     for i, (src, dst) in enumerate(op.sidecars):
         try:
             journal.add_pending(i, src, dst, parent_op_index=op_index)
-            _do_copy(src, dst)
-            if not verify_size(src, dst):
-                raise RuntimeError(f"sidecar size mismatch on {dst}")
+            sidecar_renamed = _do_copy(src, dst, allow_rename=allow_rename)
             sub_sha: str | None = None
-            if verify_hash:
-                matched, sub_sha = verify_hash_with_digest(src, dst)
-                if not matched:
-                    raise RuntimeError(f"sidecar sha256 mismatch on {dst}")
+            if not sidecar_renamed:
+                if not verify_size(src, dst):
+                    raise RuntimeError(f"sidecar size mismatch on {dst}")
+                if verify_hash:
+                    matched, sub_sha = verify_hash_with_digest(src, dst)
+                    if not matched:
+                        raise RuntimeError(f"sidecar sha256 mismatch on {dst}")
             journal.mark_verified(
                 i,
                 bytes_copied=dst.stat().st_size,
@@ -256,9 +283,29 @@ def _copy_one(op: RenameOp, op_index: int, journal: Journal, *, verify_hash: boo
             raise _SidecarCopyError(i, str(exc)) from exc
 
 
-def _do_copy(source: Path, target: Path) -> None:
+def _do_copy(source: Path, target: Path, *, allow_rename: bool) -> bool:
+    """Move/copy ``source`` -> ``target``. Returns True on rename, False on copy.
+
+    When ``allow_rename`` is set, tries ``os.rename`` first — metadata-
+    only, instant, no bytes moved. Same-filesystem moves take this path.
+    Cross-filesystem renames raise ``OSError(EXDEV)`` and we fall back
+    to ``shutil.copy2``. The caller (``_copy_one``) skips size/hash
+    verification when this returns True since the inode is identical.
+
+    When ``allow_rename`` is False, always copies. This preserves the
+    contract for callers that want the source file to survive (the CLI
+    ``plan`` + ``apply --no-cleanup`` pair).
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
+    if allow_rename:
+        try:
+            os.rename(source, target)
+            return True
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
     shutil.copy2(source, target)
+    return False
 
 
 __all__ = ["ApplyResult", "apply_plan"]
