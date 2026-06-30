@@ -38,6 +38,13 @@ from plex_renamer.parser.models import ParseResult
 from plex_renamer.tmdb.models import Candidate, Episode
 
 TITLE_TIEBREAK_THRESHOLD = 5
+
+SE_TITLE_CONSISTENCY_THRESHOLD = 60
+"""partial_ratio cutoff for "the canonical title at the filename's S/E
+slot is consistent with the parsed title". Above this we trust the S/E
+direct lookup; below, we fall through to fuzzy. 60 separates substring
+matches (XLV in 'XLV: The Scotsman Saves Jack (1)' = 100) from genuinely
+unrelated pairs ("Cat's in the Bag" vs 'Seven Thirty-Seven' = 42)."""
 """Episodes within this many points of the top match are 'ambiguous'."""
 
 MIN_TITLE_SCORE_FOR_MATCH = 50
@@ -60,6 +67,30 @@ def match_episode(
     Returns ``None`` when no usable match exists (e.g. no episode title in
     the filename and no S/E in the filename either, or the show has no
     episode list and we can't fetch).
+
+    Precedence:
+
+    1. If the filename has both a season AND an episode AND the show's
+       episode list has an entry at exactly that slot AND the filename's
+       episode title (if any) is consistent with the canonical title at
+       that slot, use it. "Consistent" = no title at all, or
+       ``partial_ratio`` >= :data:`SE_TITLE_CONSISTENCY_THRESHOLD` (a
+       substring-friendly score; a parsed ``"XLV"`` is consistent with
+       ``"XLV: The Scotsman Saves Jack (1)"`` at 100).
+    2. Else fuzzy-match the parsed episode title against the show's
+       episodes; pick the top score above ``MIN_TITLE_SCORE_FOR_MATCH``,
+       with the filename's S/E as a tiebreaker when multiple episodes
+       share the top fuzzy band.
+    3. Else (no S/E hit, no usable title) synthesize from the parsed
+       S/E if available so the planner can still emit a path.
+
+    Earlier the fuzzy match always ran first, which broke shows whose
+    filenames carried only the bare episode marker (e.g. ``XLV.mp4``
+    for Samurai Jack) — short tokens fuzz-match short unrelated tokens
+    (``XCV``) in other seasons more strongly than the canonical entry's
+    longer title under ``token_set_ratio``. The consistency check keeps
+    the original auto-correct path open for the case where the filename
+    has *correct* title but *wrong* S/E.
     """
     episodes = _ensure_episodes(parsed, show, fetch_season)
     if not episodes:
@@ -73,7 +104,36 @@ def match_episode(
             )
         return None
 
-    # Title-first fuzzy match.
+    # 1. Filename S/E direct lookup — trust the user's numbering when
+    # the canonical source has a slot for it AND the parsed title (if
+    # given) doesn't strongly contradict the canonical title at that slot.
+    if parsed.season is not None and parsed.episode is not None:
+        direct = next(
+            (
+                e
+                for e in episodes
+                if e.season == parsed.season and e.episode == parsed.episode
+            ),
+            None,
+        )
+        if direct is not None:
+            parsed_title = (parsed.episode_title or "").strip()
+            if not parsed_title:
+                return direct
+            # ``partial_ratio`` rewards substring matches, which is what
+            # we want: parsed ``"XLV"`` against the canonical
+            # ``"XLV: The Scotsman Saves Jack (1)"`` scores 100. A
+            # genuinely different title at the same slot scores low
+            # (~40), letting fuzzy take over.
+            if (
+                fuzz.partial_ratio(parsed_title.lower(), direct.title.lower())
+                >= SE_TITLE_CONSISTENCY_THRESHOLD
+            ):
+                return direct
+        # Else: no canonical slot, or canonical title contradicts the
+        # parsed one. Fall through to fuzzy.
+
+    # 2. Fuzzy title match.
     title = (parsed.episode_title or "").strip()
     if title:
         scored = _score_episodes(title, episodes)
@@ -91,13 +151,9 @@ def match_episode(
                 # No S/E hint or no agreement: take the top by score.
                 return near_top[0]
 
-    # No usable title; fall back to S/E hints if we have them.
+    # 3. Synthesize from S/E hints if available so the planner can still
+    # emit a path. The episode title goes through as-is (may be empty).
     if parsed.season is not None and parsed.episode is not None:
-        for ep in episodes:
-            if ep.season == parsed.season and ep.episode == parsed.episode:
-                return ep
-        # S/E pointed somewhere TMDB doesn't know — synthesize so we still
-        # produce a path.
         return Episode(
             season=parsed.season,
             episode=parsed.episode,
