@@ -116,6 +116,16 @@ class TMDBClient:
         episodes = payload.get("episodes", [])
         return [_episode_from_payload(season, ep) for ep in episodes]
 
+    def get_tv_external_ids(self, tmdb_id: int) -> dict[str, Any]:
+        """Fetch a TV show's external-id map (``tvdb_id``, ``imdb_id``, etc.).
+
+        Used to bridge a TMDB-anchored show to its TVDB id so we can ask
+        TVDB for alternate episode orderings. Returns the raw payload —
+        callers read whichever field they need. Raises
+        :class:`TMDBNotFound` on 404.
+        """
+        return self._get(f"/tv/{tmdb_id}/external_ids")
+
     def find_by_imdb_id(self, imdb_id: str) -> MovieResult | TVResult | None:
         """Look up a TMDB record by IMDb ``tt``-id via ``/find``.
 

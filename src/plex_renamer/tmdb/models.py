@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-AnchorKind = Literal["tmdb", "imdb"]
+AnchorKind = Literal["tmdb", "imdb", "tvdb"]
 """Which identifier system anchors the output folder."""
 
 ItemKind = Literal["movie", "tv"]

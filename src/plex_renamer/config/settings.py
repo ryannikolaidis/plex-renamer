@@ -45,6 +45,8 @@ class Settings:
 
     tmdb_api_key: str | None = None
     omdb_api_key: str | None = None
+    tvdb_api_key: str | None = None
+    tvdb_pin: str | None = None
 
     # Slice-4+ placeholders. We persist them as ``None`` until those slices
     # land so the on-disk schema is stable across the whole project.
@@ -65,20 +67,26 @@ class Settings:
         config_path: Path | None = None,
         dotenv_path: Path | None = None,
     ) -> Settings:
-        """Load settings from disk, reading ``.env`` on first run.
+        """Load settings from disk; ``.env`` fills any unset fields.
 
         Resolution order:
 
         1. If ``config_path`` (or the default ``app_config_dir() / config.json``)
-           exists, load it verbatim. ``.env`` is NOT consulted.
-        2. Otherwise, construct an empty :class:`Settings`, read ``.env``
-           (from ``dotenv_path`` or the current working directory's ``.env``)
-           for ``TMDB_API_KEY`` and ``OMDB_API_KEY``, and immediately persist.
-           Subsequent loads land in step 1.
+           exists, load it. For any field that is still ``None`` after the
+           load, ``.env`` is consulted and a matching key copies in. This
+           lets newly-introduced fields (e.g. ``TVDB_API_KEY``) land via
+           ``.env`` even after the config file already exists from an
+           earlier release. Filling from ``.env`` does NOT auto-save; the
+           file is rewritten only when the user explicitly mutates a
+           field via :meth:`save`.
+        2. If no config file exists, construct an empty :class:`Settings`,
+           hydrate from ``.env``, and persist.
         """
         path = config_path if config_path is not None else app_config_dir() / CONFIG_FILENAME
         if path.exists():
-            return cls._load_from_file(path)
+            settings = cls._load_from_file(path)
+            settings._hydrate_from_dotenv(dotenv_path, only_unset=True)
+            return settings
         # First run: pull from .env, then persist.
         settings = cls(_config_path=path)
         settings._hydrate_from_dotenv(dotenv_path)
@@ -123,12 +131,22 @@ class Settings:
 
     # ----- Internals --------------------------------------------------------
 
-    def _hydrate_from_dotenv(self, dotenv_path: Path | None) -> None:
-        """Read TMDB_API_KEY (and optional OMDB_API_KEY) from .env once.
+    def _hydrate_from_dotenv(
+        self,
+        dotenv_path: Path | None,
+        *,
+        only_unset: bool = False,
+    ) -> None:
+        """Read API keys / PINs from .env into this instance.
 
         Uses ``dotenv_values`` rather than ``load_dotenv`` so the values do
         NOT bleed into ``os.environ``; we want them isolated to the config
         file. Empty strings are treated as "not set."
+
+        ``only_unset=True`` means we only copy a value from .env when
+        the corresponding field on ``self`` is still ``None``. Used by
+        :meth:`load` when a config file already exists, so config.json
+        always wins over .env for fields the user has explicitly set.
         """
         env_path: str | None
         if dotenv_path is not None:
@@ -139,9 +157,16 @@ class Settings:
         if env_path is None:
             return
         values = dotenv_values(env_path)
-        tmdb = values.get("TMDB_API_KEY")
-        if tmdb:
-            self.tmdb_api_key = tmdb
-        omdb = values.get("OMDB_API_KEY")
-        if omdb:
-            self.omdb_api_key = omdb
+        mapping = [
+            ("TMDB_API_KEY", "tmdb_api_key"),
+            ("OMDB_API_KEY", "omdb_api_key"),
+            ("TVDB_API_KEY", "tvdb_api_key"),
+            ("TVDB_PIN", "tvdb_pin"),
+        ]
+        for env_key, attr in mapping:
+            value = values.get(env_key)
+            if not value:
+                continue
+            if only_unset and getattr(self, attr) is not None:
+                continue
+            setattr(self, attr, value)

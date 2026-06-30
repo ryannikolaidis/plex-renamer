@@ -60,6 +60,8 @@ from plex_renamer.tmdb.client import TMDBClient
 from plex_renamer.tmdb.errors import TMDBAuthError
 from plex_renamer.tmdb.fallback import IMDbFallbackResolver
 from plex_renamer.tmdb.models import Candidate, Episode
+from plex_renamer.tvdb import TVDBClient, TVDBSeasonType
+from plex_renamer.tvdb.errors import TVDBError
 
 LOW_CONF_THRESHOLD = 0.85
 
@@ -103,6 +105,13 @@ class TUIState:
     plan_rows: list[PlanRow] = field(default_factory=list)
     overrides_groups: dict[str, str] = field(default_factory=dict)
     overrides_rows: dict[str, str] = field(default_factory=dict)
+    # Episode-source overrides. ``"tmdb"`` (default) uses TMDB's per-season
+    # episode list; ``"tvdb:<season-type>"`` (e.g. ``"tvdb:official"``)
+    # fetches the corresponding ordering from TheTVDB and rematches the
+    # affected rows against it. Group-scope is keyed by group_key (one
+    # entry per show); row-scope is keyed by the file's source path.
+    group_episode_source: dict[str, str] = field(default_factory=dict)
+    row_episode_source: dict[Path, str] = field(default_factory=dict)
     filter_mode: str = "all"  # all | low-conf | unanchored
     search: str = ""
 
@@ -206,6 +215,8 @@ class RowDetailScreen(ModalScreen[dict | None]):
         {"action": "clear", "scope": "row" | "group"}
         {"action": "remove"}         # drop the row from the in-memory list
         {"action": "delete_source"}  # unlink the source file on disk (confirmed)
+        {"action": "switch_episode_source", "source": "tmdb" | "tvdb:<type>",
+         "scope": "row" | "group"}  # re-resolve episode mapping from another source
     """
 
     BINDINGS = [
@@ -300,6 +311,7 @@ class RowDetailScreen(ModalScreen[dict | None]):
                 yield Button("Clear anchor", id="clear_anchor", variant="warning")
                 yield Button("Remove from list", id="remove_row", variant="warning")
                 yield Button("Delete source file", id="delete_source", variant="error")
+                yield Button("Switch to TVDB…", id="switch_tvdb", variant="default")
                 yield Button("Cancel", id="cancel_btn", variant="default")
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -391,6 +403,8 @@ class RowDetailScreen(ModalScreen[dict | None]):
             self.dismiss({"action": "remove"})
         elif bid == "delete_source":
             self.dismiss({"action": "delete_source"})
+        elif bid == "switch_tvdb":
+            self.dismiss({"action": "open_tvdb_search"})
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -398,6 +412,172 @@ class RowDetailScreen(ModalScreen[dict | None]):
     def _dismiss_with_candidate(self, candidate: Candidate) -> None:
         scope = "group" if self._plan_row.parsed.kind == "tv" else "row"
         self.dismiss({"action": "set_candidate", "candidate": candidate, "scope": scope})
+
+
+class TVDBSearchScreen(ModalScreen[dict | None]):
+    """Search TVDB for a show + pick an episode ordering.
+
+    Result returned via ``dismiss``: ``None`` on cancel, else a dict::
+
+        {"tvdb_id": int, "tvdb_title": str, "tvdb_year": int | None,
+         "season_type": "default" | "official" | "dvd" | "absolute"
+                        | "alternate" | "regional",
+         "scope": "row" | "group"}
+
+    The caller (the App) then fetches that TVDB id's episode list under
+    the chosen ordering and re-matches the affected row(s) against it.
+    The folder anchor becomes ``{tvdb-<id>}``.
+    """
+
+    DEFAULT_CSS = """
+    TVDBSearchScreen {
+        align: center middle;
+    }
+    #tvdb_search_box {
+        width: 90%;
+        height: 90%;
+        background: $panel;
+        border: solid $primary;
+        padding: 1 2;
+    }
+    #tvdb_actions Button {
+        margin: 0 1;
+    }
+    """
+
+    _SEASON_TYPES: list[TVDBSeasonType] = [
+        "default",
+        "official",
+        "dvd",
+        "absolute",
+        "alternate",
+        "regional",
+    ]
+
+    def __init__(
+        self,
+        initial_query: str,
+        is_group_capable: bool,
+        group_size: int,
+        tvdb_client: TVDBClient,
+    ) -> None:
+        super().__init__()
+        self._initial_query = initial_query
+        self._is_group_capable = is_group_capable
+        self._group_size = group_size
+        self._tvdb_client = tvdb_client
+        self._results: list = []  # list[TVDBSeriesResult]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="tvdb_search_box"):
+            yield Label("[b]Search TVDB for show[/b]")
+            yield Static("")
+            yield Input(
+                value=self._initial_query,
+                placeholder="show title (Enter to search)",
+                id="tvdb_query",
+            )
+            yield Static("")
+            results_table: DataTable = DataTable(
+                id="tvdb_results_table", cursor_type="row", zebra_stripes=True
+            )
+            results_table.add_columns("#", "Title", "Year", "TVDB id", "Overview")
+            yield results_table
+            yield Static("")
+            yield Static(
+                "[b]Episode ordering[/b]  (TVDB's per-show alternate orderings; "
+                "'official' usually matches aired order)"
+            )
+            with Horizontal():
+                for st in self._SEASON_TYPES:
+                    yield Button(st, id=f"season_type_{st}", variant="default")
+            yield Static("")
+            if self._is_group_capable:
+                yield Static(
+                    f"[b]Scope[/b]  apply to: 'group' = all {self._group_size} "
+                    f"file(s) in this show; 'row' = only the highlighted row"
+                )
+                with Horizontal():
+                    yield Button("Apply to group", id="scope_group", variant="primary")
+                    yield Button("Apply to row", id="scope_row", variant="default")
+            else:
+                # Movies (or single-file groups) — group/row distinction is moot.
+                with Horizontal():
+                    yield Button("Apply", id="scope_row", variant="primary")
+            yield Static("")
+            with Horizontal(id="tvdb_actions"):
+                yield Button("Cancel", id="tvdb_cancel", variant="default")
+
+    def on_mount(self) -> None:
+        # Auto-run the search with the initial query (the show name).
+        self.query_one("#tvdb_query", Input).focus()
+        if self._initial_query.strip():
+            self._run_search(self._initial_query)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "tvdb_query":
+            self._run_search(event.value)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid == "tvdb_cancel":
+            self.dismiss(None)
+            return
+        if bid.startswith("season_type_"):
+            # Track selected season type by re-styling: just stash it.
+            self._selected_season_type = bid.removeprefix("season_type_")
+            # Visually mark the chosen one. We toggle variant.
+            for st in self._SEASON_TYPES:
+                btn = self.query_one(f"#season_type_{st}", Button)
+                btn.variant = "primary" if st == self._selected_season_type else "default"
+            return
+        if bid in ("scope_group", "scope_row"):
+            self._commit(scope="group" if bid == "scope_group" else "row")
+
+    def _run_search(self, query: str) -> None:
+        query = query.strip()
+        if not query:
+            return
+        try:
+            self._results = self._tvdb_client.search_series(query, limit=12)
+        except Exception as exc:
+            self.notify(f"TVDB search failed: {exc}", severity="error")
+            return
+        table = self.query_one("#tvdb_results_table", DataTable)
+        table.clear()
+        for i, r in enumerate(self._results, start=1):
+            overview = (r.overview or "").replace("\n", " ")
+            table.add_row(
+                str(i),
+                r.title,
+                str(r.year) if r.year else "",
+                str(r.tvdb_id),
+                overview[:80],
+                key=str(i - 1),
+            )
+        if not self._results:
+            self.notify("no TVDB results", severity="warning")
+
+    def _commit(self, *, scope: str) -> None:
+        if not self._results:
+            self.notify("pick a show first (run a search)", severity="warning")
+            return
+        table = self.query_one("#tvdb_results_table", DataTable)
+        row_idx = table.cursor_row
+        if not (0 <= row_idx < len(self._results)):
+            self.notify("highlight a search result first", severity="warning")
+            return
+        season_type = getattr(self, "_selected_season_type", "official")
+        chosen = self._results[row_idx]
+        self.dismiss(
+            {
+                "tvdb_id": chosen.tvdb_id,
+                "tvdb_title": chosen.title,
+                "tvdb_year": chosen.year,
+                "season_type": season_type,
+                "scope": scope,
+            }
+        )
 
 
 class EditTargetsScreen(ModalScreen[dict | None]):
@@ -600,6 +780,7 @@ class ReviewApp(App):
         cache: TMDBCache,
         resolver: IMDbFallbackResolver,
         defer_resolve: bool = False,
+        tvdb_client: TVDBClient | None = None,
     ) -> None:
         super().__init__()
         self._state = state
@@ -615,6 +796,10 @@ class ReviewApp(App):
         # (see ``_capped_notify``) so rapid converts don't pile up an
         # unbounded stack of "applied 1 file(s)" toasts.
         self._recent_toasts: deque[float] = deque()
+        self._tvdb_client = tvdb_client
+        # Per-process episode-list cache so re-applying TVDB to multiple
+        # rows of one show doesn't re-fetch on every row.
+        self._tvdb_episode_cache: dict[tuple[int, str], tuple[Episode, ...]] = {}
 
     _TOAST_CAP = 3
 
@@ -998,6 +1183,149 @@ class ReviewApp(App):
             except ValueError:
                 return
             self._prompt_delete_source(idx)
+        elif action == "open_tvdb_search":
+            self._open_tvdb_search(plan_row)
+
+    def _open_tvdb_search(self, plan_row: PlanRow) -> None:
+        """Open the TVDB-search modal pre-filled with the row's show name."""
+        if self._tvdb_client is None:
+            self._capped_notify(
+                "TVDB not configured — set TVDB_API_KEY in settings to enable",
+                severity="warning",
+                timeout=8,
+            )
+            return
+        initial = ""
+        if plan_row.row.top_candidate is not None:
+            initial = plan_row.row.top_candidate.title
+        if not initial:
+            initial = plan_row.parsed.title_candidate or plan_row.parsed.raw_filename
+        group_size = sum(
+            1 for pr in self._state.plan_rows if pr.row.group_key == plan_row.row.group_key
+        )
+        is_group_capable = plan_row.parsed.kind == "tv" and group_size > 1
+
+        def _after_search(result: dict | None) -> None:
+            if result is None:
+                return
+            self._apply_tvdb_switch(plan_row, result)
+
+        self.push_screen(
+            TVDBSearchScreen(
+                initial_query=initial,
+                is_group_capable=is_group_capable,
+                group_size=group_size,
+                tvdb_client=self._tvdb_client,
+            ),
+            _after_search,
+        )
+
+    def _apply_tvdb_switch(self, plan_row: PlanRow, picked: dict) -> None:
+        """Re-resolve a row (or whole show) against a TVDB show + ordering.
+
+        Fetches the chosen TVDB series' episode list for the chosen
+        ``season_type``, replaces the affected rows' ``top_candidate``
+        with a tvdb-anchored :class:`Candidate` carrying that episode
+        list, and reruns ``match_episode`` so the file gets the right
+        S/E + title under the new ordering.
+        """
+        if self._tvdb_client is None:
+            return
+        tvdb_id = int(picked["tvdb_id"])
+        season_type = picked["season_type"]
+        scope = picked["scope"]
+        cache_key = (tvdb_id, season_type)
+        episodes = self._tvdb_episode_cache.get(cache_key)
+        if episodes is None:
+            try:
+                result = self._tvdb_client.get_series_episodes(tvdb_id, season_type)
+            except TVDBError as exc:
+                self._capped_notify(f"TVDB fetch failed: {exc}", severity="error", timeout=8)
+                return
+            episodes = result.episodes
+            self._tvdb_episode_cache[cache_key] = episodes
+        if not episodes:
+            self._capped_notify(
+                f"TVDB returned 0 episodes for tvdb-{tvdb_id} ({season_type})",
+                severity="warning",
+            )
+            return
+
+        # Build the TVDB-anchored Candidate that will replace each row's
+        # top_candidate. ``episode_list`` is pre-populated so the planner
+        # at apply time uses TVDB data directly and avoids any TMDB
+        # round-trip for episode titles.
+        new_candidate = Candidate(
+            anchor_kind="tvdb",
+            anchor_id=str(tvdb_id),
+            kind="tv",
+            title=str(picked.get("tvdb_title") or ""),
+            year=picked.get("tvdb_year"),
+            confidence=1.0,  # user explicitly chose this
+            episode_list=tuple(episodes),
+        )
+
+        if scope == "group":
+            targets = [
+                pr for pr in self._state.plan_rows if pr.row.group_key == plan_row.row.group_key
+            ]
+            self._state.group_episode_source[plan_row.row.group_key] = f"tvdb:{season_type}"
+        else:
+            targets = [plan_row]
+            self._state.row_episode_source[plan_row.row.source_path] = f"tvdb:{season_type}"
+
+        for pr in targets:
+            try:
+                new_episode = match_episode(pr.parsed, new_candidate, fetch_season=None)
+            except Exception:
+                new_episode = None
+            new_flags = [
+                f
+                for f in pr.row.flags
+                if f
+                not in {
+                    "no-anchor",
+                    "low-confidence",
+                    "ambiguous",
+                    "empty-search",
+                    "year-mismatch",
+                    "episode-renumbered",
+                    "episode-title-mismatch",
+                    "episode-synthesized",
+                    "episode-unknown",
+                }
+            ]
+            new_flags.append("tvdb-source")
+            new_row = RowReport(
+                source_path=pr.row.source_path,
+                raw_filename=pr.row.raw_filename,
+                kind=pr.row.kind,
+                parsed_title=pr.row.parsed_title,
+                parsed_year=pr.row.parsed_year,
+                parsed_season=pr.row.parsed_season,
+                parsed_episode=pr.row.parsed_episode,
+                parsed_episode_title=pr.row.parsed_episode_title,
+                group_key=pr.row.group_key,
+                top_candidate=new_candidate,
+                alternatives=pr.row.alternatives,
+                queries_tried=pr.row.queries_tried,
+                flags=new_flags,
+                matched_episode=new_episode,
+            )
+            pr.row = new_row
+            pr.target = _compute_target(
+                pr.parsed,
+                new_candidate,
+                new_episode,
+                self._state.movies_root,
+                self._state.tv_root,
+            )
+
+        self._refresh_table()
+        self._capped_notify(
+            f"switched {len(targets)} row(s) to tvdb-{tvdb_id} ({season_type})",
+            timeout=4,
+        )
 
     def _mutate_anchor(self, plan_row: PlanRow, scope: str, candidate: Candidate | None) -> None:
         """Replace the anchor on this row (or every row in its group)."""
@@ -1316,6 +1644,20 @@ def run_review_tui(args: argparse.Namespace) -> int:
     cache = TMDBCache(client)
     resolver = IMDbFallbackResolver(tmdb=cache, omdb_api_key=settings.omdb_api_key)
 
+    # TVDB is optional — used only when the user picks the "Switch to
+    # TVDB" action in the row detail modal. Without a key, that button
+    # just notifies "not configured" and the rest of the TUI runs fine.
+    tvdb_client: TVDBClient | None = None
+    if settings.tvdb_api_key:
+        try:
+            tvdb_client = TVDBClient(
+                api_key=settings.tvdb_api_key,
+                pin=settings.tvdb_pin,
+            )
+        except Exception as exc:
+            print(f"plex-renamer: TVDB client init failed: {exc}", file=sys.stderr)
+            tvdb_client = None
+
     save_path = _resolve_save_path(args.save, source)
     state = TUIState(
         source=source,
@@ -1335,6 +1677,7 @@ def run_review_tui(args: argparse.Namespace) -> int:
         cache=cache,
         resolver=resolver,
         defer_resolve=True,
+        tvdb_client=tvdb_client,
     )
     app.run()
 

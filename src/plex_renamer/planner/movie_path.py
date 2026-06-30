@@ -28,14 +28,21 @@ from plex_renamer.tmdb.models import Candidate
 
 
 def render_anchor(candidate: Candidate) -> str:
-    """Render the Plex anchor token: ``tmdb-<id>`` or ``imdb-tt<id>``.
+    """Render the Plex anchor token.
 
-    The IMDb anchor convention requires the ``tt`` prefix to already be in
-    ``anchor_id``; we render it verbatim. The synthesizer in
-    :mod:`plex_renamer.tmdb.fallback` returns IDs with the ``tt`` prefix.
+    Supported forms:
+
+    * ``tmdb-<id>`` — TMDB-anchored show or movie
+    * ``tvdb-<id>`` — TheTVDB-anchored show (used when the user explicitly
+      picks TVDB as the source so Plex resolves directly against it)
+    * ``imdb-tt<id>`` — IMDb fallback. The ``tt`` prefix is required to be
+      already on ``anchor_id``; the synthesizer in
+      :mod:`plex_renamer.tmdb.fallback` returns IDs with it.
     """
     if candidate.anchor_kind == "tmdb":
         return f"tmdb-{candidate.anchor_id}"
+    if candidate.anchor_kind == "tvdb":
+        return f"tvdb-{candidate.anchor_id}"
     return f"imdb-{candidate.anchor_id}"
 
 
